@@ -3,7 +3,7 @@ import HealthStatus from "@/components/HealthStatus";
 /** Default main-content view shown while nothing is selected in the document tree. */
 export default function WelcomePanel() {
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <>
       <section className="rounded-lg border border-slate-200 bg-white p-8">
         <h1 className="text-xl font-semibold text-slate-900">Welcome to DocIntel</h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500">
@@ -24,6 +24,6 @@ export default function WelcomePanel() {
           <li>Locally hosted AI answers via Ollama</li>
         </ul>
       </section>
-    </div>
+    </>
   );
 }

@@ -6,7 +6,7 @@
  * calls across components.
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8002";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010";
 
 export type ServiceStatus = "ok" | "unavailable";
 
@@ -132,4 +132,41 @@ export function deleteDocument(id: number): Promise<void> {
 
 export function deleteFolder(id: number): Promise<void> {
   return deleteRequest(`/api/folders/${id}`);
+}
+
+// ---- RAG query (Phase 4) ----
+
+export type QueryScope = { type: "all" } | { type: "folder"; id: number } | { type: "document"; id: number };
+
+export interface QuerySource {
+  document_id: number;
+  document_name: string;
+  page_number: number | null;
+}
+
+export interface QueryResponse {
+  answer: string;
+  sources: QuerySource[];
+  chunks_retrieved: number;
+}
+
+export async function askQuestion(question: string, scope: QueryScope): Promise<QueryResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, scope }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null);
+    const message =
+      typeof detail?.detail === "string"
+        ? detail.detail
+        : Array.isArray(detail?.detail) && detail.detail[0]?.msg
+          ? detail.detail[0].msg
+          : `Query failed (status ${response.status})`;
+    throw new Error(message);
+  }
+
+  return response.json();
 }

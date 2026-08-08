@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { deleteDocument, deleteFolder, fetchDocumentTree } from "@/lib/api";
-import type { DocumentItem, DocumentTree, FolderNode } from "@/lib/api";
+import type { DocumentItem, DocumentTree, FolderNode, QueryScope } from "@/lib/api";
 import { findDocumentById, findFolderById } from "@/lib/tree";
 import FolderTree, { type Selection } from "@/components/document/FolderTree";
 import UploadControls from "@/components/document/UploadControls";
 import { DocumentFileDetail, DocumentFolderDetail } from "@/components/document/DocumentDetail";
+import AskPanel from "@/components/document/AskPanel";
 import WelcomePanel from "@/components/WelcomePanel";
 
 /** Owns the document tree + selection state and lays out the sidebar/main split. */
@@ -88,6 +89,13 @@ export default function DocumentExplorer() {
     tree && selection?.type === "document" ? findDocumentById(tree, selection.id) : null;
   const isEmpty = tree !== null && tree.folders.length === 0 && tree.documents.length === 0;
 
+  const queryScope: QueryScope = selectedDocument
+    ? { type: "document", id: selectedDocument.id }
+    : selectedFolder
+      ? { type: "folder", id: selectedFolder.id }
+      : { type: "all" };
+  const scopeLabel = selectedDocument?.name ?? selectedFolder?.name ?? "all documents";
+
   return (
     <div className="flex flex-1">
       <aside className="hidden w-72 shrink-0 border-r border-slate-200 bg-white p-4 md:block">
@@ -139,9 +147,16 @@ export default function DocumentExplorer() {
       </aside>
 
       <main className="flex-1 p-6">
-        {selectedDocument && <DocumentFileDetail document={selectedDocument} />}
-        {selectedFolder && !selectedDocument && <DocumentFolderDetail folder={selectedFolder} />}
-        {!selectedDocument && !selectedFolder && <WelcomePanel />}
+        <div className="mx-auto flex max-w-3xl flex-col gap-6">
+          <AskPanel
+            key={`${queryScope.type}-${"id" in queryScope ? queryScope.id : "all"}`}
+            scope={queryScope}
+            scopeLabel={scopeLabel}
+          />
+          {selectedDocument && <DocumentFileDetail document={selectedDocument} />}
+          {selectedFolder && !selectedDocument && <DocumentFolderDetail folder={selectedFolder} />}
+          {!selectedDocument && !selectedFolder && <WelcomePanel />}
+        </div>
       </main>
     </div>
   );

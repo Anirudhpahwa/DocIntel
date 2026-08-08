@@ -9,8 +9,11 @@ UUID-named location on disk) is intentionally never exposed here.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+from app.config import settings
 
 
 class DocumentOut(BaseModel):
@@ -65,3 +68,46 @@ class UploadResponse(BaseModel):
     created: int
     replaced: int
     failed: int
+
+
+# ---- RAG query (Phase 4) ----
+
+
+class QueryScope(BaseModel):
+    type: Literal["all", "folder", "document"] = "all"
+    id: int | None = None
+
+    @model_validator(mode="after")
+    def _id_required_for_scoped_types(self) -> "QueryScope":
+        if self.type in ("folder", "document") and self.id is None:
+            raise ValueError(f"scope.id is required when scope.type is '{self.type}'")
+        return self
+
+
+class QueryRequest(BaseModel):
+    question: str
+    scope: QueryScope = QueryScope()
+
+    @field_validator("question")
+    @classmethod
+    def _validate_question(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("question must not be empty")
+        if len(value) > settings.rag_max_question_length:
+            raise ValueError(
+                f"question must be at most {settings.rag_max_question_length} characters"
+            )
+        return value
+
+
+class SourceOut(BaseModel):
+    document_id: int
+    document_name: str
+    page_number: int | None
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: list[SourceOut]
+    chunks_retrieved: int

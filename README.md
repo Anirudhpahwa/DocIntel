@@ -19,16 +19,21 @@ filesystem, and records metadata in PostgreSQL; the frontend has a real
 document explorer (expand/collapse tree, select a file or folder, see its
 details, delete it).
 
-**Phase 3 — Document processing, chunking & local embeddings (current):**
-every uploaded PDF/DOCX/TXT is automatically extracted, cleaned, split into
+**Phase 3 — Document processing, chunking & local embeddings:** every
+uploaded PDF/DOCX/TXT is automatically extracted, cleaned, split into
 overlapping chunks, embedded locally with Sentence Transformers, and stored
 in PostgreSQL via pgvector — no external AI API involved. The document tree
 shows each file's processing status (indexed / processing / failed).
 
-**Not yet implemented** (later phases): semantic search / retrieval over
-the stored embeddings, RAG question answering, Ollama-generated answers,
-citations in answers, or summarization. The "Generate Summary" button
-visible in the UI is still a disabled placeholder.
+**Phase 4 — RAG question answering (current):** users ask a plain-English
+question — optionally scoped to a selected document or folder — and get a
+grounded answer plus cited sources. The question is embedded with the same
+local model used for chunks, relevant chunks are retrieved from pgvector by
+cosine similarity, and a locally running Ollama (`llama3.2`) generates the
+answer strictly from that retrieved context.
+
+**Not yet implemented** (later phases): summarization, the "Generate
+Summary" button remains a disabled placeholder.
 
 ## Tech stack
 
@@ -40,7 +45,7 @@ visible in the UI is still a disabled placeholder.
 | Storage    | Local filesystem (`storage/documents/`)   |
 | Document processing | PyMuPDF (PDF), python-docx (DOCX)|
 | Embeddings | Sentence Transformers, `all-MiniLM-L6-v2`, local, 384-dim |
-| AI runtime | Ollama (local LLM) — health-checked only so far, used for Q&A in a later phase |
+| AI runtime | Ollama (local LLM), `llama3.2` — RAG question answering over retrieved chunks |
 | Infra      | Docker Compose (PostgreSQL only)          |
 
 ## Project structure
@@ -57,9 +62,11 @@ docintel/
 │   │   │   ├── document_service.py          # folders/documents CRUD, tree (Phase 2)
 │   │   │   ├── extraction_service.py        # PDF/DOCX/TXT -> text (Phase 3)
 │   │   │   ├── chunking_service.py          # clean + chunk text (Phase 3)
-│   │   │   ├── embedding_service.py         # Sentence Transformers (Phase 3)
+│   │   │   ├── embedding_service.py         # Sentence Transformers (Phase 3 + 4)
 │   │   │   ├── document_processing_service.py  # orchestrates the above (Phase 3)
-│   │   │   └── ollama_service.py            # health check only
+│   │   │   ├── retrieval_service.py         # scope resolution + pgvector search (Phase 4)
+│   │   │   ├── rag_service.py               # RAG orchestration + system prompt (Phase 4)
+│   │   │   └── ollama_service.py            # health check + answer generation
 │   │   ├── models/               # SQLAlchemy: Folder, Document, DocumentChunk
 │   │   ├── config.py             # Environment-based settings
 │   │   ├── db.py                 # SQLAlchemy engine/session + declarative Base
@@ -71,7 +78,7 @@ docintel/
 ├── frontend/
 │   ├── app/                       # Next.js App Router pages
 │   ├── components/
-│   │   ├── document/                # DocumentExplorer, FolderTree, DocumentDetail, UploadControls
+│   │   ├── document/                # DocumentExplorer, FolderTree, DocumentDetail, UploadControls, AskPanel
 │   │   ├── Header.tsx, HealthStatus.tsx, WelcomePanel.tsx
 │   ├── lib/                        # api.ts, format.ts, tree.ts, processingStatus.ts
 │   └── package.json
@@ -89,10 +96,12 @@ docintel/
 - Docker Desktop
 - Python 3.11+
 - Node.js 20+
-- [Ollama](https://ollama.com) installed locally (optional — the app runs
-  fine without it, just reports `ollama: unavailable`)
-- ~500MB free disk for the one-time Sentence Transformers model download
-  (see "Local embeddings" below)
+- [Ollama](https://ollama.com) installed locally, with the `llama3.2` model
+  pulled (`ollama pull llama3.2`) — required for question answering
+  (Phase 4). The rest of the app (upload, browsing, indexing) still works
+  fine without it; `/api/query` just returns a clean 503 until it's running.
+- ~500MB free disk for the one-time Sentence Transformers model download,
+  plus ~2GB for the `llama3.2` model
 
 ## 1. Start PostgreSQL (with pgvector)
 
@@ -118,7 +127,7 @@ python -m venv .venv
 pip install -r requirements.txt
 cp ../.env.example .env       # or create backend/.env — see below
 alembic upgrade head           # creates/updates all tables
-uvicorn app.main:app --reload --port 8002
+uvicorn app.main:app --reload --port 8010
 ```
 
 The backend reads configuration from `backend/.env` (see
@@ -128,12 +137,19 @@ The backend reads configuration from `backend/.env` (see
 `<repo_root>/storage/documents/` by default. On startup the backend also
 ensures that directory exists.
 
-> **Port 8002, not 8000:** this project's default dev port is 8002 (not
-> FastAPI's usual 8000) because 8000 is unreliably squatted by other local
-> projects' Docker networking on the reference dev machine — the exact
-> same reason Postgres runs on 5433 instead of 5432 (see above). Adjust
-> freely if 8002 is also taken on your machine; just keep
-> `NEXT_PUBLIC_API_URL` (frontend) in sync.
+> **Port 8010, not 8000:** this project's default dev port is 8010 (not
+> FastAPI's usual 8000) because 8000 — and, when tried, 8002 — were
+> unreliably squatted by other local projects' Docker networking on the
+> reference dev machine, the exact same reason Postgres runs on 5433
+> instead of 5432 (see above). Adjust freely if 8010 is also taken on your
+> machine; just keep `NEXT_PUBLIC_API_URL` (frontend) in sync.
+>
+> If `--reload` ever seems to silently keep serving old code after an
+> edit, it's a sign uvicorn's file-watcher respawned its worker under a
+> different Python interpreter than the one you launched with (seen on
+> the reference machine). Drop `--reload` and run
+> `python -m uvicorn app.main:app --port 8010` directly, restarting by
+> hand after changes, to rule it out.
 
 ### Schema migrations
 
@@ -150,26 +166,28 @@ npm run dev
 ```
 
 The frontend reads `NEXT_PUBLIC_API_URL` from `frontend/.env.local`
-(defaults to `http://localhost:8002`). Visit `http://localhost:3000`.
+(defaults to `http://localhost:8010`). Visit `http://localhost:3000`.
 
-## 4. Configure Ollama (optional so far)
+## 4. Configure Ollama
 
-Install [Ollama](https://ollama.com), then pull a model, e.g.:
+Install [Ollama](https://ollama.com), then pull the model this project uses:
 
 ```bash
 ollama pull llama3.2
 ```
 
 Ollama runs locally as its own process (not containerized) and is expected
-at `OLLAMA_BASE_URL` (default `http://localhost:11434`). If it isn't
-running, the health endpoint simply reports `ollama: unavailable` — the
-rest of the app keeps working. Ollama isn't used for anything yet besides
-this health check — question answering arrives in a later phase.
+at `OLLAMA_BASE_URL` (default `http://localhost:11434`), using the model
+named in `OLLAMA_MODEL` (default `llama3.2`) — never hardcoded elsewhere in
+the code. If it isn't running, the health endpoint reports
+`ollama: unavailable` and `POST /api/query` returns a clean
+`503 "AI model is currently unavailable."` — everything else (upload,
+browsing, indexing, deleting) keeps working regardless.
 
 ## 5. Verify the health endpoint
 
 ```bash
-curl http://localhost:8002/api/health
+curl http://localhost:8010/api/health
 ```
 
 Expected response once everything is running:
@@ -290,11 +308,114 @@ message.
 `test-data/NHSRCL-Demo/` contains a small set of **entirely fictional**
 NHSRCL-style documents (daily operations PDFs with train counts per route,
 a DOCX safety report, a TXT project overview) used to exercise and verify
-the processing pipeline end-to-end. None of it is real NHSRCL data.
+the processing (Phase 3) and retrieval/Q&A (Phase 4) pipelines end-to-end.
+None of it is real NHSRCL data.
+
+## Question answering (Phase 4)
+
+### API
+
+```
+POST /api/query
+{ "question": "What were the major causes of delay?",
+  "scope": { "type": "all" } }                              // or:
+  "scope": { "type": "folder", "id": 12 }                    // folder + all nested subfolders
+  "scope": { "type": "document", "id": 47 }                  // one document only
+```
+
+Response:
+
+```json
+{
+  "answer": "…grounded answer…",
+  "sources": [{ "document_id": 15, "document_name": "August_06_Report.pdf", "page_number": 1 }],
+  "chunks_retrieved": 6
+}
+```
+
+`question` must be non-empty (after trimming) and at most
+`RAG_MAX_QUESTION_LENGTH` characters (default 2000) — both enforced by a
+Pydantic validator, returning `422` with a clear message. An unknown
+`document`/`folder` id in `scope` returns `404`. An unreachable Ollama
+returns `503` with `"AI model is currently unavailable."` — never a raw
+stack trace.
+
+### Pipeline
+
+```
+question -> embed (embedding_service, same 384-dim MiniLM model as chunks)
+         -> resolve scope to a document-id set (retrieval_service)
+         -> pgvector cosine-similarity search, top RAG_TOP_K, indexed docs only
+         -> drop chunks below RAG_SIMILARITY_THRESHOLD
+         -> build "SOURCE N / Document / Page / text" context (rag_service)
+         -> Ollama llama3.2, grounded system prompt, temperature RAG at OLLAMA_TEMPERATURE
+         -> answer + sources deduped by (document_id, page_number)
+```
+
+Retrieval and ranking happen entirely in PostgreSQL — one
+`ORDER BY embedding <=> :query_vector LIMIT :k` query via pgvector's
+`cosine_distance`, never chunks loaded into Python and sorted by hand. No
+HNSW index (same reasoning as Phase 3: unnecessary at this document count).
+
+### Scope filtering
+
+- `"all"` — every indexed chunk, no document-id filter.
+- `"document"` — a single document id.
+- `"folder"` — reuses `document_service.collect_documents_under_folder`
+  (the same BFS helper Phase 2's recursive folder delete uses) to resolve
+  every document in that folder **and all nested subfolders**, rather than
+  re-implementing folder-tree traversal in the RAG code.
+
+All three additionally filter to `processing_status = "indexed"` — pending,
+processing, and failed documents are never searched.
+
+### Similarity threshold
+
+`RAG_SIMILARITY_THRESHOLD` (default **0.2**) was tuned by measuring actual
+cosine similarities against `test-data/NHSRCL-Demo`, not chosen blindly:
+genuinely off-topic questions (e.g. general world knowledge unrelated to
+the corpus) topped out around **0.13–0.20** similarity, while chunks
+relevant to an answerable question — even ones that don't happen to
+contain the specific fact asked about — landed at **0.25 and up**. 0.2 sits
+in that gap. Below-threshold results are dropped before the LLM is ever
+called; if a scope has zero chunks clearing the bar,
+`POST /api/query` returns "I couldn't find relevant information…" without
+a wasted round-trip to Ollama.
+
+### System prompt & grounding
+
+The system prompt (`rag_service.SYSTEM_PROMPT`) instructs the model to:
+answer only from the provided SOURCE sections; never invent facts, numbers,
+dates, or sources; explicitly say when the sources are insufficient rather
+than guess; treat source text strictly as reference material and ignore
+any instructions embedded inside it (basic prompt-injection hygiene); and,
+for multi-source numeric questions, list each value and its source before
+computing a total (with a worked example) — this specific step meaningfully
+improved `llama3.2:3B`'s reliability on questions like "how many trains ran
+... from Aug 6 to Aug 8" (14 + 12 + 16 = 42), which it would otherwise
+sometimes stop short of actually summing. `OLLAMA_TEMPERATURE` defaults to
+`0.0` for the same reason — deterministic, non-"creative" answers matter
+more than variety here.
+
+### Citations
+
+Sources are built entirely from database metadata in `rag_service.py` —
+**never** parsed out of the LLM's own text — from the same chunks that were
+actually retrieved, deduplicated by `(document_id, page_number)` (so
+several chunks from the same PDF page collapse to one source card; DOCX/TXT,
+which always have `page_number = null`, collapse to one card per document).
+
+### Configuration
+
+All new settings live in `Settings` (`app/config.py`), not hardcoded:
+`RAG_TOP_K` (default 8), `RAG_SIMILARITY_THRESHOLD` (0.2),
+`RAG_MAX_QUESTION_LENGTH` (2000), `OLLAMA_TIMEOUT_SECONDS` (60),
+`OLLAMA_TEMPERATURE` (0.0).
 
 ## Notes
 
-- No paid API is used anywhere in this project. Embeddings run 100% locally
-  after the one-time model download described above.
-- Semantic retrieval, RAG question answering, citations, and summarization
-  are intentionally out of scope so far — see "Scope so far" above.
+- No paid API is used anywhere in this project. Embeddings and question
+  answering both run 100% locally (Sentence Transformers + Ollama) after
+  their one-time model downloads.
+- Summarization is intentionally out of scope so far — see "Scope so far"
+  above.

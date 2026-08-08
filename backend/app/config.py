@@ -33,6 +33,27 @@ class Settings(BaseSettings):
     # Reject uploads larger than this, in megabytes.
     max_upload_size_mb: int = 100
 
+    # Phase 4: RAG settings. Kept configurable rather than hardcoded so
+    # they can be tuned without touching retrieval_service.py/rag_service.py.
+    rag_top_k: int = 8
+    # Minimum cosine similarity (1 - cosine_distance, so 1.0 = identical)
+    # a retrieved chunk must clear to be considered relevant. Tuned against
+    # test-data/NHSRCL-Demo: all-MiniLM-L6-v2 puts genuinely off-topic
+    # questions (e.g. general world knowledge) around ~0.13-0.20 similarity
+    # against this corpus, while on-topic chunks — even ones that don't
+    # contain the specific fact asked about — land at ~0.25 and up. 0.2
+    # sits in the gap: low enough to keep real answers in (a straight
+    # "what date is this report" question's correct chunk scored 0.28),
+    # high enough to reject pure noise before ever calling the LLM. See
+    # README for the measurements this was based on.
+    rag_similarity_threshold: float = 0.2
+    rag_max_question_length: int = 2000
+    ollama_timeout_seconds: int = 60
+    # Low, not zero: keeps answers deterministic-ish and reduces the small
+    # local model's tendency to "reason" its way into an inconsistent
+    # numeric synthesis, without making it totally rigid.
+    ollama_temperature: float = 0.0
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
