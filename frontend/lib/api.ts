@@ -6,7 +6,7 @@
  * calls across components.
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8002";
 
 export type ServiceStatus = "ok" | "unavailable";
 
@@ -31,6 +31,8 @@ export async function fetchHealth(): Promise<HealthResponse> {
 
 // ---- Documents & folders (Phase 2) ----
 
+export type ProcessingStatus = "pending" | "processing" | "indexed" | "failed";
+
 export interface DocumentItem {
   id: number;
   folder_id: number | null;
@@ -40,6 +42,8 @@ export interface DocumentItem {
   file_size: number;
   created_at: string;
   updated_at: string;
+  processing_status: ProcessingStatus;
+  processing_error: string | null;
 }
 
 export interface FolderNode {
@@ -75,6 +79,8 @@ export interface UploadFileResult {
   status: "created" | "replaced" | "error";
   document_id: number | null;
   error: string | null;
+  processing_status: ProcessingStatus | null;
+  processing_error: string | null;
 }
 
 export interface UploadResponse {

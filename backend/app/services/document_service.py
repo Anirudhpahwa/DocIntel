@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.models.document import Document
+from app.models.document import Document, ProcessingStatus
 from app.models.folder import Folder
 from app.services import storage_service
 
@@ -131,6 +131,10 @@ def upsert_document(
         existing.file_path = physical_relative_path
         existing.file_type = file_type
         existing.file_size = file_size
+        # Reset processing state — document_processing_service will reprocess
+        # this document (deleting stale chunks) right after upload commits.
+        existing.processing_status = ProcessingStatus.PENDING.value
+        existing.processing_error = None
         db.flush()
         return existing, True
 
@@ -141,6 +145,7 @@ def upsert_document(
         file_path=physical_relative_path,
         file_type=file_type,
         file_size=file_size,
+        processing_status=ProcessingStatus.PENDING.value,
     )
     db.add(document)
     db.flush()
@@ -185,6 +190,8 @@ def build_tree(db: Session) -> dict:
             "file_size": document.file_size,
             "created_at": document.created_at,
             "updated_at": document.updated_at,
+            "processing_status": document.processing_status,
+            "processing_error": document.processing_error,
         }
 
     return {

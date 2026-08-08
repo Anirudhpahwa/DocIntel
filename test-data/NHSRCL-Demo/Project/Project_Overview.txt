@@ -1,0 +1,9 @@
+NHSRCL Project Overview
+
+The Ahmedabad-Mumbai high-speed rail corridor spans approximately 508 kilometers, connecting Ahmedabad, Vadodara, Surat, and Mumbai.
+
+The project includes 12 stations along the corridor. Construction began in 2017, with the initial operational segment targeted for 2027.
+
+Design speed for the corridor is 320 km/h, with a scheduled operating speed of 280 km/h for regular passenger services.
+
+This document is a fictional demo dataset created for testing DocIntel's document processing pipeline and does not represent real NHSRCL data.

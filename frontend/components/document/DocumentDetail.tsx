@@ -1,6 +1,7 @@
 import type { DocumentItem, FolderNode } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
 import { countContents } from "@/lib/tree";
+import { PROCESSING_STATUS_DISPLAY } from "@/lib/processingStatus";
 
 function GenerateSummaryButton() {
   return (
@@ -42,7 +43,18 @@ export function DocumentFileDetail({ document }: { document: DocumentItem }) {
           )}
 
           <dt className="text-slate-500">Status</dt>
-          <dd className="text-emerald-600">Uploaded</dd>
+          <dd className={PROCESSING_STATUS_DISPLAY[document.processing_status].colorClassName}>
+            <span
+              aria-hidden
+              className={PROCESSING_STATUS_DISPLAY[document.processing_status].spin ? "inline-block animate-spin" : "inline-block"}
+            >
+              {PROCESSING_STATUS_DISPLAY[document.processing_status].icon}
+            </span>{" "}
+            {PROCESSING_STATUS_DISPLAY[document.processing_status].label}
+            {document.processing_status === "failed" && document.processing_error && (
+              <span className="mt-1 block text-xs text-red-500">{document.processing_error}</span>
+            )}
+          </dd>
         </dl>
 
         <div className="mt-6">

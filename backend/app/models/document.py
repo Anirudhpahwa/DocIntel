@@ -1,18 +1,30 @@
 """
 Document ORM model.
 
-Phase 2 stores metadata + a pointer to the physical file on the local
-filesystem only — no extracted text, chunks, or embeddings yet (Phase 3).
+Phase 2 added metadata + a pointer to the physical file on the local
+filesystem. Phase 3 adds processing status tracking and a `chunks`
+relationship to DocumentChunk (extracted text + embeddings) — see
+document_processing_service.py for the pipeline that populates it.
 `folder_id` is nullable: NULL means the document sits at the top level
 (e.g. from a plain "Upload Files" action with no folder involved).
 """
 
 from datetime import datetime
+from enum import Enum
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+
+class ProcessingStatus(str, Enum):
+    """Lifecycle of a document's text-extraction/chunking/embedding pipeline."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    INDEXED = "indexed"
+    FAILED = "failed"
 
 
 class Document(Base):
@@ -35,6 +47,20 @@ class Document(Base):
     file_type: Mapped[str] = mapped_column(String(10), nullable=False)
     file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # Phase 3: text-extraction/chunking/embedding pipeline status. New
+    # documents start "pending"; the upload endpoint kicks off processing
+    # synchronously right after the row is committed (see
+    # document_processing_service.process_document).
+    processing_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=ProcessingStatus.PENDING.value,
+        server_default=ProcessingStatus.PENDING.value,
+    )
+    # Set only when processing_status == "failed"; cleared on every new
+    # processing attempt.
+    processing_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -46,3 +72,9 @@ class Document(Base):
     )
 
     folder: Mapped["Folder | None"] = relationship("Folder", back_populates="documents")
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        "DocumentChunk",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        back_populates="document",
+    )

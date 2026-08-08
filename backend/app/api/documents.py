@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.document import Document
 from app.schemas import DocumentTreeResponse, UploadFileResult, UploadResponse
-from app.services import document_service, storage_service
+from app.services import document_processing_service, document_service, storage_service
 from app.services.document_service import InvalidUploadPathError
 from app.services.storage_service import UploadTooLargeError
 
@@ -39,6 +39,13 @@ async def upload_documents(
 
     Never fails the whole batch for one bad file: each file succeeds or
     fails independently and is reported in `results`.
+
+    Each successfully stored file is processed synchronously in the same
+    request (text extraction -> chunking -> local embeddings -> pgvector) —
+    see document_processing_service. A processing failure (e.g. a corrupt
+    PDF) does not fail the upload itself: the document keeps its stored
+    file and is marked `processing_status: "failed"` with a diagnostic
+    `processing_error`, reported alongside the upload outcome below.
     """
     if len(files) != len(paths):
         raise HTTPException(
@@ -79,12 +86,19 @@ async def upload_documents(
                 created += 1
                 status = "created"
 
+            # Synchronous for this local demo — see document_processing_service
+            # docstring. Never raises: failures land in processing_status/_error.
+            document_processing_service.process_document(db, document.id)
+            db.refresh(document)
+
             results.append(
                 UploadFileResult(
                     filename=original_filename,
                     relative_path=raw_path,
                     status=status,
                     document_id=document.id,
+                    processing_status=document.processing_status,
+                    processing_error=document.processing_error,
                 )
             )
 

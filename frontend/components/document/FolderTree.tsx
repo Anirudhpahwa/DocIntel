@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { FolderNode } from "@/lib/api";
+import { PROCESSING_STATUS_DISPLAY } from "@/lib/processingStatus";
 
 export type Selection = { type: "folder" | "document"; id: number } | null;
 
@@ -156,6 +157,22 @@ function DocumentRow({
           <span aria-hidden>{FILE_ICON}</span>
           <span className="truncate">{document.name}</span>
         </button>
+        {(() => {
+          const status = PROCESSING_STATUS_DISPLAY[document.processing_status];
+          return (
+            <span
+              aria-hidden
+              className={`shrink-0 text-xs ${status.colorClassName} ${status.spin ? "animate-spin" : ""}`}
+              title={
+                document.processing_status === "failed" && document.processing_error
+                  ? `Failed: ${document.processing_error}`
+                  : status.label
+              }
+            >
+              {status.icon}
+            </span>
+          );
+        })()}
         <button
           type="button"
           onClick={() => onDelete(document)}

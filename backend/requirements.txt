@@ -8,3 +8,9 @@ python-dotenv==1.0.1
 httpx==0.28.1
 alembic==1.14.0
 python-multipart==0.0.20
+
+# Phase 3: document processing, chunking, local embeddings
+pymupdf==1.28.2
+python-docx==1.2.0
+sentence-transformers==5.7.0
+pgvector==0.5.0

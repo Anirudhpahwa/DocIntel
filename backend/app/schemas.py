@@ -24,6 +24,8 @@ class DocumentOut(BaseModel):
     file_size: int
     created_at: datetime
     updated_at: datetime
+    processing_status: str  # "pending" | "processing" | "indexed" | "failed"
+    processing_error: str | None
 
 
 class FolderNode(BaseModel):
@@ -52,6 +54,10 @@ class UploadFileResult(BaseModel):
     status: str  # "created" | "replaced" | "error"
     document_id: int | None = None
     error: str | None = None
+    # Populated once processing (extract/chunk/embed) finishes for this
+    # file — processing runs synchronously as part of the same request.
+    processing_status: str | None = None
+    processing_error: str | None = None
 
 
 class UploadResponse(BaseModel):

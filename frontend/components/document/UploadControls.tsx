@@ -105,7 +105,10 @@ function UploadResultSummary({
   result: UploadResponse;
   onDismiss: () => void;
 }) {
-  const failedItems = result.results.filter((r) => r.status === "error");
+  const uploadFailures = result.results.filter((r) => r.status === "error");
+  const processingFailures = result.results.filter(
+    (r) => r.status !== "error" && r.processing_status === "failed"
+  );
 
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-2 text-xs">
@@ -123,11 +126,17 @@ function UploadResultSummary({
           &times;
         </button>
       </div>
-      {failedItems.length > 0 && (
+      {(uploadFailures.length > 0 || processingFailures.length > 0) && (
         <ul className="mt-1.5 space-y-1 border-t border-slate-200 pt-1.5">
-          {failedItems.map((item) => (
-            <li key={item.relative_path} className="text-red-600">
+          {uploadFailures.map((item) => (
+            <li key={`upload-${item.relative_path}`} className="text-red-600">
               <span className="font-medium">{item.filename}:</span> {item.error}
+            </li>
+          ))}
+          {processingFailures.map((item) => (
+            <li key={`processing-${item.relative_path}`} className="text-amber-600">
+              <span className="font-medium">{item.filename}:</span> uploaded, but indexing failed
+              — {item.processing_error}
             </li>
           ))}
         </ul>

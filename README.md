@@ -12,17 +12,23 @@ generate file- and folder-level summaries — all without any paid API.
 together, with `GET /api/health` reporting API/database/pgvector/Ollama
 status.
 
-**Phase 2 — File & folder management (current):** upload single files,
-multiple files, or entire folders (including nested folders); the backend
+**Phase 2 — File & folder management:** upload single files, multiple
+files, or entire folders (including nested folders); the backend
 reconstructs the logical folder hierarchy, stores files on the local
 filesystem, and records metadata in PostgreSQL; the frontend has a real
 document explorer (expand/collapse tree, select a file or folder, see its
 details, delete it).
 
-**Not yet implemented** (later phases): reading file contents (PDF/DOCX/TXT
-text extraction), chunking, embeddings, vector search, RAG, AI-generated
-question answering, or summarization. The "Generate Summary" button visible
-in the UI is a disabled placeholder only.
+**Phase 3 — Document processing, chunking & local embeddings (current):**
+every uploaded PDF/DOCX/TXT is automatically extracted, cleaned, split into
+overlapping chunks, embedded locally with Sentence Transformers, and stored
+in PostgreSQL via pgvector — no external AI API involved. The document tree
+shows each file's processing status (indexed / processing / failed).
+
+**Not yet implemented** (later phases): semantic search / retrieval over
+the stored embeddings, RAG question answering, Ollama-generated answers,
+citations in answers, or summarization. The "Generate Summary" button
+visible in the UI is still a disabled placeholder.
 
 ## Tech stack
 
@@ -32,7 +38,9 @@ in the UI is a disabled placeholder only.
 | Backend    | Python, FastAPI, SQLAlchemy, Alembic      |
 | Database   | PostgreSQL + pgvector                     |
 | Storage    | Local filesystem (`storage/documents/`)   |
-| AI runtime | Ollama (local LLM), Sentence Transformers (added in a later phase) |
+| Document processing | PyMuPDF (PDF), python-docx (DOCX)|
+| Embeddings | Sentence Transformers, `all-MiniLM-L6-v2`, local, 384-dim |
+| AI runtime | Ollama (local LLM) — health-checked only so far, used for Q&A in a later phase |
 | Infra      | Docker Compose (PostgreSQL only)          |
 
 ## Project structure
@@ -40,29 +48,38 @@ in the UI is a disabled placeholder only.
 ```
 docintel/
 ├── backend/
-│   ├── alembic/            # Schema migrations
+│   ├── alembic/                # Schema migrations
 │   │   └── versions/
 │   ├── app/
-│   │   ├── api/              # FastAPI routers: health, documents, folders
-│   │   ├── services/         # ollama_service, storage_service, document_service
-│   │   ├── models/           # SQLAlchemy models: Folder, Document
-│   │   ├── config.py         # Environment-based settings
-│   │   ├── db.py             # SQLAlchemy engine/session + declarative Base
-│   │   ├── schemas.py        # Pydantic request/response models
-│   │   └── main.py           # App entry point
+│   │   ├── api/                  # FastAPI routers: health, documents, folders
+│   │   ├── services/
+│   │   │   ├── storage_service.py           # physical file I/O (Phase 2)
+│   │   │   ├── document_service.py          # folders/documents CRUD, tree (Phase 2)
+│   │   │   ├── extraction_service.py        # PDF/DOCX/TXT -> text (Phase 3)
+│   │   │   ├── chunking_service.py          # clean + chunk text (Phase 3)
+│   │   │   ├── embedding_service.py         # Sentence Transformers (Phase 3)
+│   │   │   ├── document_processing_service.py  # orchestrates the above (Phase 3)
+│   │   │   └── ollama_service.py            # health check only
+│   │   ├── models/               # SQLAlchemy: Folder, Document, DocumentChunk
+│   │   ├── config.py             # Environment-based settings
+│   │   ├── db.py                 # SQLAlchemy engine/session + declarative Base
+│   │   ├── schemas.py            # Pydantic request/response models
+│   │   └── main.py               # App entry point
 │   ├── alembic.ini
 │   ├── requirements.txt
-│   └── .env                   # local only, not committed
+│   └── .env                       # local only, not committed
 ├── frontend/
-│   ├── app/                   # Next.js App Router pages
+│   ├── app/                       # Next.js App Router pages
 │   ├── components/
-│   │   ├── document/            # DocumentExplorer, FolderTree, DocumentDetail, UploadControls
+│   │   ├── document/                # DocumentExplorer, FolderTree, DocumentDetail, UploadControls
 │   │   ├── Header.tsx, HealthStatus.tsx, WelcomePanel.tsx
-│   ├── lib/                    # api.ts (backend calls), format.ts, tree.ts
+│   ├── lib/                        # api.ts, format.ts, tree.ts, processingStatus.ts
 │   └── package.json
-├── storage/                  # Uploaded files (local-only, gitignored)
+├── storage/                      # Uploaded files (local-only, gitignored)
 │   └── documents/
-├── docker-compose.yml        # PostgreSQL + pgvector
+├── test-data/
+│   └── NHSRCL-Demo/               # Synthetic fictional test dataset (see below)
+├── docker-compose.yml             # PostgreSQL + pgvector
 ├── .env.example
 └── README.md
 ```
@@ -74,6 +91,8 @@ docintel/
 - Node.js 20+
 - [Ollama](https://ollama.com) installed locally (optional — the app runs
   fine without it, just reports `ollama: unavailable`)
+- ~500MB free disk for the one-time Sentence Transformers model download
+  (see "Local embeddings" below)
 
 ## 1. Start PostgreSQL (with pgvector)
 
@@ -98,8 +117,8 @@ python -m venv .venv
 # source .venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
 cp ../.env.example .env       # or create backend/.env — see below
-alembic upgrade head           # creates the folders/documents tables
-uvicorn app.main:app --reload --port 8000
+alembic upgrade head           # creates/updates all tables
+uvicorn app.main:app --reload --port 8002
 ```
 
 The backend reads configuration from `backend/.env` (see
@@ -108,6 +127,13 @@ The backend reads configuration from `backend/.env` (see
 `STORAGE_ROOT`, `MAX_UPLOAD_SIZE_MB`). Uploaded files are stored under
 `<repo_root>/storage/documents/` by default. On startup the backend also
 ensures that directory exists.
+
+> **Port 8002, not 8000:** this project's default dev port is 8002 (not
+> FastAPI's usual 8000) because 8000 is unreliably squatted by other local
+> projects' Docker networking on the reference dev machine — the exact
+> same reason Postgres runs on 5433 instead of 5432 (see above). Adjust
+> freely if 8002 is also taken on your machine; just keep
+> `NEXT_PUBLIC_API_URL` (frontend) in sync.
 
 ### Schema migrations
 
@@ -124,7 +150,7 @@ npm run dev
 ```
 
 The frontend reads `NEXT_PUBLIC_API_URL` from `frontend/.env.local`
-(defaults to `http://localhost:8000`). Visit `http://localhost:3000`.
+(defaults to `http://localhost:8002`). Visit `http://localhost:3000`.
 
 ## 4. Configure Ollama (optional so far)
 
@@ -143,7 +169,7 @@ this health check — question answering arrives in a later phase.
 ## 5. Verify the health endpoint
 
 ```bash
-curl http://localhost:8000/api/health
+curl http://localhost:8002/api/health
 ```
 
 Expected response once everything is running:
@@ -167,17 +193,17 @@ whenever nothing is selected in the document tree.
 ### Supported file types
 
 `.pdf`, `.docx`, `.txt` only — anything else is rejected per-file with a
-clear error (the file's contents are never read in this phase, only stored).
+clear error.
 
 ### API
 
 | Method | Path                     | Purpose |
 |--------|--------------------------|---------|
 | GET    | `/api/health`            | API/database/pgvector/Ollama status |
-| POST   | `/api/documents/upload`  | Upload one or more files (single, multiple, or a whole folder) |
-| GET    | `/api/documents/tree`    | Full folder/document hierarchy in one response |
-| DELETE | `/api/documents/{id}`    | Delete one document (DB row + physical file) |
-| DELETE | `/api/folders/{id}`      | Delete a folder and everything inside it, recursively |
+| POST   | `/api/documents/upload`  | Upload one or more files (single, multiple, or a whole folder); processes each synchronously (see below) |
+| GET    | `/api/documents/tree`    | Full folder/document hierarchy, including each document's processing status |
+| DELETE | `/api/documents/{id}`    | Delete one document (DB row + physical file + its chunks) |
+| DELETE | `/api/folders/{id}`      | Delete a folder and everything inside it, recursively (subfolders, documents, chunks) |
 
 `POST /api/documents/upload` expects multipart form data with two parallel
 fields: `files` (the file blobs) and `paths` (one string per file, in the
@@ -185,16 +211,15 @@ same order) giving that file's logical path relative to the upload root —
 e.g. `January.pdf` for a flat upload, or `NHSRCL/Reports/2026/January.pdf`
 for a folder upload. Missing intermediate folders are created
 automatically. The response reports each file's outcome individually
-(`created` / `replaced` / `error`) — one bad file never fails the whole
-batch.
+(`created` / `replaced` / `error`, plus `processing_status` /
+`processing_error`) — one bad file never fails the whole batch.
 
 ### Duplicate uploads
 
 Uploading the same logical path again (same folder + filename) **replaces**
-the existing document: its physical file is swapped and its metadata
-updated in place, keeping the same document ID. This was chosen over
-silently creating a second record or hard-rejecting, since re-uploading a
-corrected file is the expected common case for this app.
+the existing document: its physical file is swapped, its metadata updated
+in place, and it is fully reprocessed (old chunks/embeddings deleted, new
+ones generated) — keeping the same document ID throughout.
 
 ### Storage layout
 
@@ -205,9 +230,71 @@ PostgreSQL (`folders.path`, `documents.name`/`folder_id`). This sidesteps
 path-traversal risk entirely for storage I/O and avoids on-disk filename
 collisions between same-named files in different folders.
 
+## Document processing & local embeddings (Phase 3)
+
+Every successfully uploaded file is processed **synchronously**, as part of
+the same upload request (no background job queue — this is a small local
+demo, so simplicity wins):
+
+```
+Stored file -> extract text -> clean -> chunk (~1200 chars, ~200 overlap)
+            -> embed locally (Sentence Transformers) -> store in pgvector
+            -> document marked "indexed" (or "failed" with a reason)
+```
+
+- **Extraction** (`extraction_service.py`): PDF via PyMuPDF, page-by-page
+  (empty pages skipped, page numbers preserved). DOCX via python-docx —
+  python-docx has no reliable page boundaries, so DOCX/TXT chunks always
+  have `page_number: null` rather than a fabricated number.
+- **Cleaning** (`chunking_service.clean_text`): whitespace normalization
+  only — numbers, dates, names, and punctuation are never touched, since
+  later phases need those intact (e.g. "how many trains ran ... from 6 Aug
+  to 30 Aug?").
+- **Chunking** (`chunking_service.chunk_pages`): packs paragraphs into
+  ~1200-character blocks without splitting words, then carries ~200
+  characters of trailing context from each block into the next
+  (overlap). `chunk_index` is sequential per document; `page_number`
+  (PDFs only) is preserved per chunk.
+- **Embeddings** (`embedding_service.py`): [`sentence-transformers/all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2),
+  384 dimensions, loaded once per process and reused for every chunk.
+  **Runs entirely on-device — no API key, no external embedding service.**
+  The model downloads once (~90MB) from Hugging Face on first use and is
+  cached under `~/.cache/huggingface/`; every embedding call after that
+  runs locally against the cached weights.
+
+### `document_chunks` table
+
+```
+id | document_id (FK, ON DELETE CASCADE) | page_number (nullable)
+   | chunk_index | content | embedding VECTOR(384) | created_at
+```
+
+No HNSW/vector index was added — at this project's scale (a handful of
+demo documents, low hundreds of chunks), pgvector's exact brute-force scan
+is already fast, and adding an index "just in case" would be premature
+optimization for a two-day local demo. This can be revisited if Phase 4's
+real usage shows it's actually needed.
+
+### Processing status
+
+Each document has `processing_status` (`pending` / `processing` /
+`indexed` / `failed`) and an optional `processing_error`, both visible in
+`GET /api/documents/tree` and shown in the frontend (a small icon next to
+each file in the tree, and a full status line in the detail panel). A
+processing failure (e.g. a corrupt PDF) never crashes the API or blocks the
+upload — the file is still stored, just marked `failed` with a diagnostic
+message.
+
+### Synthetic test dataset
+
+`test-data/NHSRCL-Demo/` contains a small set of **entirely fictional**
+NHSRCL-style documents (daily operations PDFs with train counts per route,
+a DOCX safety report, a TXT project overview) used to exercise and verify
+the processing pipeline end-to-end. None of it is real NHSRCL data.
+
 ## Notes
 
-- No paid API is used anywhere in this project.
-- Text extraction, embeddings, vector search, RAG, question answering, and
-  summarization are intentionally out of scope so far — see "Scope so far"
-  above.
+- No paid API is used anywhere in this project. Embeddings run 100% locally
+  after the one-time model download described above.
+- Semantic retrieval, RAG question answering, citations, and summarization
+  are intentionally out of scope so far — see "Scope so far" above.
