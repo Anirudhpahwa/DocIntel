@@ -29,8 +29,13 @@ shows each file's processing status (indexed / processing / failed).
 question — optionally scoped to a selected document or folder — and get a
 grounded answer plus cited sources. The question is embedded with the same
 local model used for chunks, relevant chunks are retrieved from pgvector by
-cosine similarity, and a locally running Ollama (`llama3.2`) generates the
-answer strictly from that retrieved context.
+cosine similarity (kept deliberately broad, for multi-document questions),
+and a locally running Ollama (`llama3.2`) generates the answer strictly
+from that retrieved context, additionally identifying — via backend-issued,
+request-scoped `SOURCE_N` labels it can only select from, never invent —
+which of the retrieved chunks actually support its answer, so the source
+list shown to the user can be narrower than what was retrieved without
+narrowing retrieval itself.
 
 **Not yet implemented** (later phases): summarization, the "Generate
 Summary" button remains a disabled placeholder.
@@ -347,8 +352,12 @@ question -> embed (embedding_service, same 384-dim MiniLM model as chunks)
          -> resolve scope to a document-id set (retrieval_service)
          -> pgvector cosine-similarity search, top RAG_TOP_K, indexed docs only
          -> drop chunks below RAG_SIMILARITY_THRESHOLD
-         -> build "SOURCE N / Document / Page / text" context (rag_service)
-         -> Ollama llama3.2, grounded system prompt, temperature RAG at OLLAMA_TEMPERATURE
+         -> build "SOURCE_N / Document / Page / text" context (rag_service),
+            each candidate chunk labeled with a backend-generated SOURCE_N id
+         -> Ollama llama3.2, grounded system prompt, structured JSON output,
+            temperature at OLLAMA_TEMPERATURE
+         -> validate the model's supporting_source_ids against the SOURCE_N
+            ids actually sent -> map surviving ids back to chunk metadata
          -> answer + sources deduped by (document_id, page_number)
 ```
 
@@ -385,25 +394,74 @@ a wasted round-trip to Ollama.
 ### System prompt & grounding
 
 The system prompt (`rag_service.SYSTEM_PROMPT`) instructs the model to:
-answer only from the provided SOURCE sections; never invent facts, numbers,
-dates, or sources; explicitly say when the sources are insufficient rather
-than guess; treat source text strictly as reference material and ignore
-any instructions embedded inside it (basic prompt-injection hygiene); and,
-for multi-source numeric questions, list each value and its source before
-computing a total (with a worked example) — this specific step meaningfully
-improved `llama3.2:3B`'s reliability on questions like "how many trains ran
-... from Aug 6 to Aug 8" (14 + 12 + 16 = 42), which it would otherwise
-sometimes stop short of actually summing. `OLLAMA_TEMPERATURE` defaults to
-`0.0` for the same reason — deterministic, non-"creative" answers matter
-more than variety here.
+answer only from the provided SOURCE_N sections; never invent facts,
+numbers, dates, or sources; explicitly say when the sources are insufficient
+rather than guess; treat source text strictly as reference material and
+ignore any instructions embedded inside it (basic prompt-injection hygiene);
+and, for multi-source numeric questions, list each value and its SOURCE_N
+before computing a total (with a worked example) — this specific step
+meaningfully improved `llama3.2:3B`'s reliability on questions like "how
+many trains ran ... from Aug 6 to Aug 8" (14 + 12 + 16 = 42), which it would
+otherwise sometimes stop short of actually summing. `OLLAMA_TEMPERATURE`
+defaults to `0.0` for the same reason — deterministic, non-"creative"
+answers matter more than variety here.
+
+The prompt's worked examples deliberately use a generic, unrelated scenario
+("widgets shipped Monday–Wednesday") rather than anything resembling the
+real corpus — an earlier version reused the actual train-route domain in
+its examples, which confused `llama3.2:3B` into treating the example's
+numbers as if they were part of the real context, and it started refusing
+to answer questions it clearly had the source for. Keeping example content
+topically unrelated to real documents avoids that failure mode.
+
+### Evidence selection (source precision)
+
+Retrieval stays deliberately broad — `RAG_TOP_K` and
+`RAG_SIMILARITY_THRESHOLD` are unchanged from the values above, and a
+threshold-only investigation confirmed no single value can both narrow a
+specific question's sources *and* keep every chunk a multi-document
+question needs (see `docs/CLAUDE_CONTEXT.md` §14–15 for the full
+measurements). Instead, precision is handled one stage later: every
+candidate chunk that clears retrieval is given a temporary, request-scoped
+label (`SOURCE_1`, `SOURCE_2`, …) in the prompt, and the model is asked to
+return structured JSON — `{"answer": "...", "supporting_source_ids": [...]}`
+— identifying which specific `SOURCE_N` labels its answer actually relies
+on, as a judgment distinct from writing the answer itself ("topically
+related" is explicitly not the same as "directly supports this answer" in
+the system prompt). This uses Ollama's native structured-output support
+(the `/api/generate` `format` field as a JSON schema, supported since
+Ollama 0.5+) rather than a parsing library — the schema constrains
+generation itself, so the response is reliably valid JSON.
+
+Retrieval is never narrowed to achieve this — a narrow question still
+retrieves and sends every topically-similar chunk to the model, it's the
+*display* of sources that becomes precise, not the search.
 
 ### Citations
 
-Sources are built entirely from database metadata in `rag_service.py` —
-**never** parsed out of the LLM's own text — from the same chunks that were
-actually retrieved, deduplicated by `(document_id, page_number)` (so
+The LLM is treated as untrusted input for anything citation-shaped. It may
+only *select* from the `SOURCE_N` labels the backend handed it in that
+request — it can never invent a label, and it can never supply a document
+name, page number, or id directly (the JSON schema only accepts a list of
+strings for `supporting_source_ids`, so an attempt to smuggle structured
+metadata there fails Pydantic validation, not silent coercion). Backend
+validation (`rag_service._parse_and_validate_llm_output`) checks every
+returned id against the ids actually sent for that request; any unknown id
+is discarded and logged, while the rest of the (valid) selection is kept —
+chosen over rejecting the whole selection because it doesn't throw away an
+otherwise-correct answer's citations over one bad id. Malformed JSON or a
+missing/empty `answer` field falls back to a safe canned message with zero
+sources rather than crashing the request or leaking a raw parse error.
+
+Once validated, sources are built entirely from database metadata in
+`rag_service.py` — **never** parsed out of the LLM's own text — from the
+*selected* chunks only, deduplicated by `(document_id, page_number)` (so
 several chunks from the same PDF page collapse to one source card; DOCX/TXT,
 which always have `page_number = null`, collapse to one card per document).
+`chunks_retrieved` in the API response still reflects the retrieval stage
+(how many chunks cleared the similarity threshold and were sent to the
+model) — it is not redefined to mean "sources selected"; the (usually
+smaller) selected-and-deduped set is what appears in `sources`.
 
 ### Configuration
 

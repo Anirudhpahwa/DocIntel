@@ -111,3 +111,19 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceOut]
     chunks_retrieved: int
+
+
+class LLMAnswerWithSources(BaseModel):
+    """
+    Shape of the structured JSON Ollama is asked to return for a query
+    (Phase 4 source-selection). Internal only — never returned directly by
+    the API. `supporting_source_ids` are expected to be a subset of the
+    backend-generated, request-scoped "SOURCE_N" labels handed to the model
+    in the prompt (see rag_service._build_context); they are NOT database
+    ids and must never be trusted as citation metadata on their own —
+    rag_service validates every id against the labels it actually sent
+    before mapping any of them back to real chunk/document metadata.
+    """
+
+    answer: str
+    supporting_source_ids: list[str] = []

@@ -1,6 +1,6 @@
 """
 Ollama connectivity: the Phase 1 health check, plus (Phase 4) the actual
-grounded-answer generation call used by rag_service.py. Both talk to the
+grounded-answer generation calls used by rag_service.py. Both talk to the
 locally running Ollama server over its HTTP API — never the `ollama` CLI
 process, never an external LLM API. The model name is always read from
 settings.ollama_model, never hardcoded.
@@ -20,6 +20,25 @@ class OllamaUnavailableError(Exception):
     """
 
 
+# Phase 4 source-selection: constrains Ollama's output to exactly this
+# shape via its native structured-output support (the `format` field
+# accepting a JSON schema, not just `"json"`) rather than hoping the model
+# free-forms valid JSON and parsing it after the fact. No extra parsing
+# library is introduced — the schema is enforced by Ollama itself, and the
+# result is plain `json.loads` on the backend side (in rag_service).
+_ANSWER_WITH_SOURCES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "supporting_source_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": ["answer", "supporting_source_ids"],
+}
+
+
 async def check_ollama_available() -> bool:
     """Return True if the Ollama server responds, False otherwise."""
     url = f"{settings.ollama_base_url}/api/tags"
@@ -31,12 +50,15 @@ async def check_ollama_available() -> bool:
         return False
 
 
-async def generate_answer(system_prompt: str, user_prompt: str) -> str:
+async def _call_generate(
+    system_prompt: str, user_prompt: str, response_format: dict | None = None
+) -> dict:
     """
-    Ask the configured Ollama model to answer, given a system prompt and a
-    user prompt (rag_service builds the latter from retrieved document
-    context + the question). Single-turn, non-streaming — Phase 4 doesn't
-    need conversation history or token-by-token streaming.
+    Shared low-level call to Ollama's /api/generate. `response_format`,
+    when given, is passed through as Ollama's `format` field (a JSON
+    schema) to constrain the model's output shape. Raises
+    OllamaUnavailableError on any connection failure or non-2xx response —
+    the only error handling shared by both callers below.
     """
     url = f"{settings.ollama_base_url}/api/generate"
     payload = {
@@ -46,12 +68,14 @@ async def generate_answer(system_prompt: str, user_prompt: str) -> str:
         "stream": False,
         "options": {"temperature": settings.ollama_temperature},
     }
+    if response_format is not None:
+        payload["format"] = response_format
 
     try:
         async with httpx.AsyncClient(timeout=settings.ollama_timeout_seconds) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json()
+            return response.json()
     except httpx.RequestError as exc:
         raise OllamaUnavailableError("Could not reach the local Ollama server") from exc
     except httpx.HTTPStatusError as exc:
@@ -59,7 +83,37 @@ async def generate_answer(system_prompt: str, user_prompt: str) -> str:
             f"Ollama returned an error (status {exc.response.status_code})"
         ) from exc
 
+
+async def generate_answer(system_prompt: str, user_prompt: str) -> str:
+    """
+    Ask the configured Ollama model to answer, given a system prompt and a
+    user prompt, and return the raw text response. Single-turn,
+    non-streaming. Kept as a plain-text primitive (unused by rag_service's
+    Phase 4 query path as of the source-selection change below, but left
+    intact for reuse — e.g. Phase 5 summarization has no need for
+    source-selection JSON).
+    """
+    data = await _call_generate(system_prompt, user_prompt)
     answer = (data.get("response") or "").strip()
     if not answer:
         raise OllamaUnavailableError("Ollama returned an empty response")
     return answer
+
+
+async def generate_answer_with_sources(system_prompt: str, user_prompt: str) -> str:
+    """
+    Phase 4 source-selection: asks Ollama for a structured JSON object
+    (validated against _ANSWER_WITH_SOURCES_SCHEMA by Ollama itself) of the
+    shape {"answer": str, "supporting_source_ids": [str, ...]}. Returns the
+    raw JSON string as-is — this function does no interpretation of the
+    content, it's a thin HTTP call like generate_answer above. rag_service
+    is responsible for parsing it and validating supporting_source_ids
+    against the SOURCE_N labels it actually handed to the model; the LLM's
+    output is never trusted as citation metadata here or anywhere upstream
+    of that validation.
+    """
+    data = await _call_generate(system_prompt, user_prompt, response_format=_ANSWER_WITH_SOURCES_SCHEMA)
+    raw = (data.get("response") or "").strip()
+    if not raw:
+        raise OllamaUnavailableError("Ollama returned an empty response")
+    return raw
