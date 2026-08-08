@@ -2,19 +2,24 @@
 Database connection layer.
 
 Provides a SQLAlchemy engine/session for PostgreSQL, plus small helper
-functions used by the health check. Later phases will add ORM models here
-without needing to change this file.
+functions used by the health check. ORM models (app/models/) declare their
+tables against the shared `Base` defined here; Alembic (backend/alembic/)
+owns turning those model definitions into actual schema migrations.
 """
 
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
 
 engine = create_engine(settings.database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+class Base(DeclarativeBase):
+    """Shared declarative base for all ORM models."""
 
 
 def get_db() -> Generator[Session, None, None]:

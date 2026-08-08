@@ -1,18 +1,28 @@
 """
 DocIntel backend entry point.
 
-Phase 1 scope: application bootstrap, CORS, and the /api/health endpoint
-only. Document upload, parsing, embeddings, and RAG are implemented in
-later phases.
+Phase 1: application bootstrap, CORS, and the /api/health endpoint.
+Phase 2: document/folder upload, storage, and browsing. Text extraction,
+embeddings, and RAG are still implemented in later phases.
 """
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health
+from app.api import documents, folders, health
 from app.config import settings
+from app.services.storage_service import ensure_storage_dirs
 
-app = FastAPI(title="DocIntel API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    ensure_storage_dirs()
+    yield
+
+
+app = FastAPI(title="DocIntel API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,6 +33,8 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(documents.router)
+app.include_router(folders.router)
 
 
 @app.get("/")

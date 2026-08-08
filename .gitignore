@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 venv/
 
+# Uploaded documents (local-only storage, not committed)
+storage/
+
 # Node / Next.js
 node_modules/
 frontend/.next/
