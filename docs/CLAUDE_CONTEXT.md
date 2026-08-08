@@ -1,6 +1,6 @@
 # DocIntel — Engineering Handoff / Context Document
 
-**You are continuing development of DocIntel. Read this file completely before making changes.** It was written by inspecting the actual repository (source, migrations, config, README) at the end of Phase 4 — not from memory of a prior conversation. Treat this file as orientation; treat the repository as the ultimate source of truth. If they disagree, the code wins, and this file should be corrected.
+**You are continuing development of DocIntel. Read this file completely before making changes.** It was written by inspecting the actual repository (source, migrations, config, README) at the end of Phase 5 — not from memory of a prior conversation. Treat this file as orientation; treat the repository as the ultimate source of truth. If they disagree, the code wins, and this file should be corrected.
 
 ---
 
@@ -8,7 +8,7 @@
 
 **DocIntel** is an NHSRCL summer internship project: a locally hosted, completely free document intelligence tool. It's explicitly a demo/internship project, not production infrastructure — simplicity and correctness are prioritized over scale or performance.
 
-Intended workflow: upload individual files, multiple files, or entire (nested) folders → browse the resulting hierarchy → select a file or folder as "scope" (or leave nothing selected to search everything) → ask a normal English question → get an answer grounded only in the selected documents, with citations → (Phase 5, future) generate a summary for a file or folder.
+Intended workflow: upload individual files, multiple files, or entire (nested) folders → browse the resulting hierarchy → select a file or folder as "scope" (or leave nothing selected to search everything) → ask a normal English question → get an answer grounded only in the selected documents, with citations → generate a natural-language summary for a selected file or folder (Phase 5, complete).
 
 The user should never need to know about embeddings, vectors, SQL, RAG, or document IDs. They upload files and ask questions; the backend does the rest.
 
@@ -18,7 +18,7 @@ The user should never need to know about embeddings, vectors, SQL, RAG, or docum
 - Fully local execution. No cloud storage/database, no public-hosting requirement.
 - Embeddings: `sentence-transformers/all-MiniLM-L6-v2`, local, 384 dimensions.
 - LLM: Ollama, model `llama3.2`, via Ollama's local HTTP API (never the CLI as a subprocess).
-- Don't introduce new technology without a demonstrated need (§22 lists what's deliberately excluded).
+- Don't introduce new technology without a demonstrated need (§26 lists what's deliberately excluded).
 
 ## 3. Technology stack (verified against the repo)
 
@@ -54,10 +54,10 @@ Authoritative source: `backend/app/config.py` (`Settings`) and root `.env.exampl
                               │
                   Next.js frontend (localhost:3000)
                    DocumentExplorer / FolderTree /
-                   UploadControls / DocumentDetail / AskPanel
+             UploadControls / DocumentDetail / AskPanel / SummaryPanel
                               │  HTTP (fetch), JSON + multipart
                 FastAPI backend (localhost:8010)
-                   app/api/{health,documents,folders,query}.py
+              app/api/{health,documents,folders,query,summarize}.py
         ┌─────────────────────┼───────────────────────┐
         ▼                     ▼                        ▼
   PostgreSQL + pgvector  Local filesystem         Ollama (localhost:11434)
@@ -70,7 +70,9 @@ Backend layering: `app/api/*.py` (thin routers) → `app/services/*.py` (all log
 
 **Upload/index flow:** browser → `POST /api/documents/upload` → `storage_service` (UUID-named file to disk) + `document_service` (upsert Folder/Document) → `document_processing_service.process_document()` synchronously runs `extraction_service` → `chunking_service` → `embedding_service` → writes `DocumentChunk` rows → `processing_status` becomes `indexed`/`failed`.
 
-**Query/answer flow:** browser → `POST /api/query` → `rag_service.answer_question()` → `embedding_service.embed_texts([question])` → `retrieval_service` (scope resolve + pgvector search) → `rag_service._build_context()` → `ollama_service.generate_answer()` → `rag_service._dedupe_sources()` → JSON `{answer, sources, chunks_retrieved}`.
+**Query/answer flow:** browser → `POST /api/query` → `rag_service.answer_question()` → `embedding_service.embed_texts([question])` → `retrieval_service` (scope resolve + pgvector search) → `rag_service._build_context()` → `ollama_service.generate_answer_with_sources()` → `rag_service._parse_and_validate_llm_output()` → `rag_service._dedupe_sources()` → JSON `{answer, sources, chunks_retrieved}`.
+
+**Summarize flow (Phase 5):** browser → `POST /api/summarize` → `summary_service.generate_summary()` → `retrieval_service.resolve_scope_document_ids()` (reused unchanged from Phase 4) → load indexed `DocumentChunk` rows for the resolved documents → `summary_service._build_context()` → `ollama_service.generate_answer()` (single-pass) or `summary_service._generate_map_reduce()` (large scopes) → JSON `{summary, documents_included, chunks_used}`. No new extraction/chunking/embedding pipeline, no new scope-resolution logic, no citations.
 
 ## 6. Phase 1 — Foundation (COMPLETE)
 
@@ -247,7 +249,84 @@ With `TOP_K=8` and `THRESHOLD=0.2`, **7 of 8 total chunks in the whole corpus** 
 
 **This issue is resolved as of this update.** Do not re-open it by changing `RAG_TOP_K` or `RAG_SIMILARITY_THRESHOLD` to chase source precision — that path was investigated and proven not to work (Step 1 above). Any further precision work belongs in the source-selection layer (`rag_service._build_context` / `_parse_and_validate_llm_output` / `SYSTEM_PROMPT`), not retrieval.
 
-## 16. Synthetic test data
+## 16. Phase 5 — Summarization (COMPLETE)
+
+`POST /api/summarize` generates a natural-language summary of a selected document or folder (recursively including nested subfolders), built entirely from already-indexed Phase 3 chunks — no new extraction/chunking/embedding pipeline, no new scope-resolution logic, no database changes.
+
+```
+scope (document or folder) → resolve to a document-id set
+    (retrieval_service.resolve_scope_document_ids, reused unchanged from Phase 4)
+  → load indexed DocumentChunk rows for those documents
+  → build "DOCUMENT N / Name / SOURCE_CHUNK_N / Page / text" context
+    (summary_service._build_context), chunks ordered by chunk_index
+    (reading order, not similarity rank — there's no question to rank against)
+  → Ollama llama3.2 via ollama_service.generate_answer (plain text,
+    no structured JSON — unlike Phase 4 Q&A)
+  → summary text
+```
+
+**Request/response:**
+```json
+{"scope": {"type": "document", "id": 15}}
+// or: {"scope": {"type": "folder", "id": 3}}
+```
+```json
+{"summary": "…", "documents_included": 3, "chunks_used": 6}
+```
+
+**Scope schema reused, not duplicated:** `SummarizeRequest.scope` is `schemas.QueryScope` (the exact Phase 4 type: `{type: Literal["all","folder","document"], id: int|None}`, same Pydantic validator requiring `id` for `"folder"`/`"document"`). `"all"` is structurally valid at the Pydantic layer but is explicitly rejected by `summary_service.generate_summary` with `InvalidSummaryScopeError` → `422` — summarization always targets one specific selection, never the whole corpus (no "summarize everything" UI exists).
+
+**Scope resolution reused, not duplicated:** `summary_service.generate_summary` calls `retrieval_service.resolve_scope_document_ids(db, scope_type, scope_id)` — the exact same helper Phase 4's RAG retrieval uses (which itself reuses `document_service.collect_documents_under_folder` for folder scope, including all nested subfolders). Raises `retrieval_service.ScopeNotFoundError` → `404` for an unknown id — same exception class as Phase 4, imported the same way in `app/api/summarize.py`.
+
+Both scopes additionally filter to `processing_status == "indexed"`. An empty folder, a document still `pending`/`processing`/`failed`, or a folder containing only such documents all short-circuit to `summary_service.NO_INDEXED_CONTENT_MESSAGE` (returned as a normal `200` response with `documents_included: 0, chunks_used: 0`) **without ever calling Ollama** — mirrors `rag_service.NO_CONTEXT_MESSAGE`'s role in Phase 4.
+
+**No citations.** Summarization intentionally does not use Phase 4's `SOURCE_N` citation-selection mechanism (§11) — different task, no question to ground an answer against, and forcing it in wasn't worth the complexity for a feature meant to give an overview. `ollama_service.generate_answer` (the plain-text primitive, unused by the Phase 4 query path since §14–15 but explicitly kept for this kind of reuse) is used directly.
+
+**No database changes.** No new tables, no new migrations. Summaries are generated fresh on every request and are never persisted — they exist only in the HTTP response and, client-side, in `SummaryPanel`'s component state for the current session. No caching: every "Generate Summary" click regenerates from scratch.
+
+## 17. Phase 5 context-size strategy
+
+Chosen only after measuring the actual dataset, not assumed: the entire `test-data/NHSRCL-Demo` corpus (5 documents, 8 chunks) is **~2,700 characters total** (measured directly from the DB: `August_06/07/08_Report.pdf` 621/484/479 chars, `Project_Overview.txt` 560, `Safety_Report.docx` 590) — comfortably inside one prompt. So the default path is deliberately the simplest one: build one context block from every chunk in scope, send one summarization prompt, done (`summary_service._summarize_text`).
+
+Two independent, evidence-based triggers fall back to a two-stage map → combine strategy (`summary_service._generate_map_reduce`) instead of one oversized/overloaded prompt — both in `Settings` (`app/config.py`), env-overridable like the RAG settings:
+
+- **`SUMMARY_MAX_CONTEXT_CHARS = 12000`** — a hard character budget on the built context. ~4.4x the real corpus's total size, so this never fires for the current dataset but protects against a genuinely large future upload.
+- **`SUMMARY_SINGLE_PASS_MAX_DOCUMENTS = 3`** — found empirically, not guessed. Testing `llama3.2:3B` against this project's own corpus: a 3-document single-pass folder summary (`Operations`) was reliable across repeated runs; a 5-document single-pass summary (`NHSRCL-Demo`, nested) occasionally merged/mislabeled a single document's own numbers even though total content was still tiny (~2,700 chars, nowhere near the char budget) — observed failure: `Safety_Report.docx` literally states "6 track inspections and 4 signal inspections," but a 5-document single-pass summary came back with "**10** track inspections and 4 signal system inspections" (the correct total of both figures, 10, got relabeled onto the wrong figure). This is a distinct failure mode from Phase 4's threshold problem — a document-count effect, not a character-count effect — so it needed its own, independent trigger.
+
+When either trigger fires: each document is summarized individually first (verified reliable in isolation — this is exactly what fixed the 6-vs-10 error, confirmed by testing), then the resulting short per-document summaries are combined with a second, distinct prompt (`SUMMARY_COMBINE_SYSTEM_PROMPT`). If even one document's own content exceeds the char budget on its own (unreachable with the current test corpus), its chunks are deterministically truncated in `chunk_index` order — kept until the budget fills, tail dropped — and the resulting mini-summary gets a short "(Note: ... truncated ...)" suffix so truncation is never silent. Exactly two stages; not a general recursive/hierarchical framework.
+
+**`SUMMARY_NUM_CTX = 8192`** is passed as Ollama's `num_ctx` option on summarization calls only, via `ollama_service.generate_answer`'s new optional `extra_options` parameter (backward-compatible addition — `_call_generate` merges it into the default `{"temperature": ...}` options dict; no existing caller passes it, so Phase 4's RAG generation is provably unaffected). Set explicitly rather than relying on Ollama's undocumented default context window, since summarization prompts can legitimately be longer than a single RAG question.
+
+## 18. Phase 5 summarization prompts
+
+`summary_service.SUMMARY_SYSTEM_PROMPT` and `SUMMARY_COMBINE_SYSTEM_PROMPT` are dedicated prompts, **not a reuse of `rag_service.SYSTEM_PROMPT`** — summarizing has no question to ground an answer against and no citation selection, a genuinely different task with different failure modes. Both instruct the model to: treat supplied content as the only source of truth; never invent facts/numbers/dates/names; preserve important figures exactly as given; synthesize across documents rather than writing disconnected per-document summaries (stating each date/document's own figure side by side when the same metric repeats); and say so plainly if content is too sparse to summarize meaningfully.
+
+**Failure mode found and fixed during implementation (numeric hallucination in aggregation):** an early prompt version allowed the model to compute a combined total across documents/dates. Testing showed `llama3.2:3B` sometimes computed this incorrectly and without being asked to show its work — observed: a 5-document summary stated "a total of 39 trains" when the actual documented daily counts (14, 12, 16) sum to 42. This is a distinct failure mode from Phase 4's arithmetic issue (§12): there, the model needed to be taught *how* to sum reliably (list-then-add, worked example); here, summarization doesn't need a computed total at all, so the fix was to forbid the computation entirely rather than trying to make it reliable. Both prompts now explicitly forbid computing any combined total unless the source material already states that exact total itself, with a worked example (domain-neutral "5 units Monday, 7 Tuesday, 3 Wednesday" — per the §12 lesson, deliberately not resembling the real train-report corpus) showing the required "list side by side" pattern instead of "list is a computed sum is worse than no sum." Re-tested 3x after this fix against the hardest case (5-document nested folder): zero fabricated totals.
+
+**Failure mode found and fixed during implementation (single-document detail-merging in dense multi-document synthesis):** see §17 — the "6 track + 4 signal → 10 track + 4 signal" error. A second prompt rule ("before writing each number down, re-check it against its exact source sentence... do not merge two figures into one") reduced but did not eliminate this error in single-pass mode; the reliable fix was architectural (§17's `SUMMARY_SINGLE_PASS_MAX_DOCUMENTS` trigger), not further prompt tuning — routing that specific case through map → combine, not prompt wording, is what actually eliminated it across repeated runs.
+
+## 19. Phase 5 test results (actually run against current code)
+
+All 8 required tests, run directly through `summary_service.generate_summary` (real DB, real Ollama, nothing mocked) and cross-checked over the real HTTP endpoint:
+
+| # | Test | Scope | Result |
+|---|---|---|---|
+| 1 | Single document | `document` (`August_06_Report.pdf`) | Correct: mentions p.1 route counts (14/9/14) and p.2 maintenance (track inspection km 45–78, next inspection Aug 20, Vadodara signal OK) |
+| 2 | Folder | `folder` (`Operations`) | Correct: synthesizes all 3 daily reports into one narrative (not 3 disconnected summaries), single-pass (3 documents ≤ budget) |
+| 3 | Nested folder | `folder` (`NHSRCL-Demo`) | Correct: reaches all 5 documents across 3 subfolders via map→combine (5 > `SUMMARY_SINGLE_PASS_MAX_DOCUMENTS`); no documents outside scope (none exist outside this root anyway — verified via Test 4 for real exclusion) |
+| 4 | Scope isolation | `folder` (`Safety`) | Correct: only `Safety_Report.docx` facts (Safety Officer A. Mehta, 6 track + 4 signal inspections, 12 staff certified Aug 5, next review Sep 1) — zero Operations/train facts leaked |
+| 5 | Numeric preservation | Folder/nested-folder runs above | 14/12/16 (and 9/9/10, 14/14/15) reproduced correctly whenever stated; zero fabricated totals across repeated runs after the §18 fix (previously observed once: "39" instead of 42) |
+| 6 | Empty scope | Empty test folder (created and deleted for this test); nonexistent document/folder id; `scope.type: "all"` | Empty folder → `200` with `NO_INDEXED_CONTENT_MESSAGE`, `documents_included: 0`, Ollama never called (verified: near-instant response, no generation delay). Nonexistent id → `404` (`ScopeNotFoundError`). `"all"` → `422` (`InvalidSummaryScopeError`) |
+| 7 | Ollama unavailable | `document` (`August_06_Report.pdf`), Ollama process killed | `503` `"AI model is currently unavailable."` via real HTTP; `/api/health` correctly reported `ollama: unavailable` while `api`/`database`/`pgvector` stayed `ok`; unrelated endpoints (`/api/documents/tree`) kept working; backend never crashed |
+| 8 | Phase 4 regression | All of §13's tests | 7/7 scope/hallucination tests pass unchanged; both 5x reliability runs (Test 1, Test 2) unchanged; Phase 5 introduced zero regressions |
+
+**Map→combine path specifically verified** (§17): forced (via direct function call, not a code change) against the 5-document nested-folder case, 2 repeated runs, both correctly preserved "6 track inspections and 4 signal inspections" — confirming the architectural fix, not just a lucky single run.
+
+**A real, unrelated dev-environment issue was found and fixed during Test 7's HTTP verification:** a stale server process from an earlier session was already bound to port 8010, running under the *global* Python interpreter (`C:\Python312\python.exe`, not the project's `.venv`) — exactly the failure mode `docs/CLAUDE_CONTEXT.md` §4 already warned about, serving old code with no `/api/summarize` route at all. Diagnosed via `wmic process where "ProcessId=<pid>" get CommandLine`, killed, server restarted correctly under `.venv`. Not a code bug; recorded here because it's a recurrence of a documented dev-machine quirk, not a new one.
+
+**Frontend:** `npm run lint` and `npm run build` both pass cleanly after the change. `SummaryPanel.tsx` is a new component; `DocumentDetail.tsx`'s two disabled placeholder buttons were replaced with working `<SummaryPanel key={id} scope={...}/>` instances (keyed by document/folder id so switching selection resets stale summary state — the same pattern `AskPanel` already used for scope changes).
+
+## 20. Synthetic test data
 
 `test-data/NHSRCL-Demo/` — entirely fictional (the TXT file says so explicitly), created for this project only.
 
@@ -267,7 +346,7 @@ Ground truth (re-extracted directly while writing this document):
 
 Sum check (Test 2): 14 + 12 + 16 = **42**.
 
-## 17. Database schema
+## 21. Database schema
 
 Two Alembic migrations, applied in order: `7c6c775d2fd0` (create `folders`+`documents`) → `48b55eb229fa` (add `document_chunks` + `documents.processing_status`/`processing_error`). Current head: `48b55eb229fa`.
 
@@ -279,7 +358,7 @@ Two Alembic migrations, applied in order: `7c6c775d2fd0` (create `folders`+`docu
 
 Cascade verified end-to-end: Folder delete → Documents cascade → DocumentChunks cascade (all Postgres `ON DELETE CASCADE`); physical files are cleaned up separately by application code (`storage_service.delete_physical_file`) before the DB delete, since disk files aren't Postgres-tracked. No index on `document_chunks.embedding` (§8).
 
-## 18. Project tree (key files)
+## 22. Project tree (key files)
 
 ```
 NHSRCL DocIntel/
@@ -287,7 +366,7 @@ NHSRCL DocIntel/
 ├── backend/
 │   ├── alembic/versions/{7c6c775d2fd0,48b55eb229fa}_*.py
 │   ├── app/
-│   │   ├── api/{health,documents,folders,query}.py
+│   │   ├── api/{health,documents,folders,query,summarize}.py
 │   │   ├── models/{folder,document,document_chunk}.py
 │   │   ├── services/
 │   │   │   ├── storage_service.py             # file I/O, UUID naming, path safety (P2)
@@ -296,9 +375,10 @@ NHSRCL DocIntel/
 │   │   │   ├── chunking_service.py             # clean_text, chunk_pages (P3)
 │   │   │   ├── embedding_service.py             # SentenceTransformer singleton (P3, reused P4)
 │   │   │   ├── document_processing_service.py  # extract→chunk→embed→store orchestration (P3)
-│   │   │   ├── retrieval_service.py             # scope resolution + pgvector search (P4, unchanged by §14-15)
+│   │   │   ├── retrieval_service.py             # scope resolution + pgvector search (P4, unchanged by §14-15, reused unchanged by P5)
 │   │   │   ├── rag_service.py                   # RAG orchestration, SYSTEM_PROMPT, SOURCE_N context, LLM output validation, dedup (P4)
-│   │   │   └── ollama_service.py                # health check + generate_answer + generate_answer_with_sources (structured JSON) (P1+P4)
+│   │   │   ├── summary_service.py               # summarization orchestration, SUMMARY_SYSTEM_PROMPT, map->combine (P5)
+│   │   │   └── ollama_service.py                # health check + generate_answer(+extra_options) + generate_answer_with_sources (P1+P4+P5)
 │   │   ├── config.py / db.py / schemas.py / main.py
 │   ├── alembic.ini / requirements.txt
 ├── frontend/
@@ -308,16 +388,17 @@ NHSRCL DocIntel/
 │   │   ├── DocumentExplorer.tsx   # tree+selection state, derives query scope, sidebar+main layout
 │   │   ├── FolderTree.tsx          # recursive tree UI
 │   │   ├── UploadControls.tsx      # Upload Files/Folder + result summary
-│   │   ├── DocumentDetail.tsx      # file/folder detail panels (incl. disabled Generate Summary)
-│   │   └── AskPanel.tsx            # P4: scope-aware question box, answer, sources
+│   │   ├── DocumentDetail.tsx      # file/folder detail panels, renders SummaryPanel (P5)
+│   │   ├── AskPanel.tsx            # P4: scope-aware question box, answer, sources
+│   │   └── SummaryPanel.tsx        # P5: Generate Summary button + result panel, keyed by document/folder id
 │   ├── lib/{api,tree,format,processingStatus}.ts
 │   └── package.json
 ├── storage/documents/              # local-only, gitignored, UUID-named files
-├── test-data/NHSRCL-Demo/          # synthetic fictional dataset, §16
+├── test-data/NHSRCL-Demo/          # synthetic fictional dataset, §20
 ├── docker-compose.yml / .env.example / README.md
 ```
 
-## 19. Current API contract
+## 23. Current API contract
 
 | Method | Path | Request | Response | Errors |
 |---|---|---|---|---|
@@ -327,8 +408,9 @@ NHSRCL DocIntel/
 | DELETE | `/api/documents/{id}` | — | 204 | 404 |
 | DELETE | `/api/folders/{id}` | — | 204, recursive | 404 |
 | POST | `/api/query` | `{question,scope}` | `{answer,sources[],chunks_retrieved}` | 422 bad input, 404 scope id, 503 Ollama down, 500 unexpected |
+| POST | `/api/summarize` | `{scope}` (`QueryScope` reused; `"all"` rejected) | `{summary,documents_included,chunks_used}` | 422 bad/`"all"` scope, 404 scope id, 503 Ollama down, 500 unexpected |
 
-## 20. Frontend (current)
+## 24. Frontend (current)
 
 Single-page app: static `Header` (branding + inert "Documents"/"Ask"/"Summaries" placeholders — no routing exists) + `DocumentExplorer`, which owns nearly all client state and renders a sidebar (`FolderTree` + `UploadControls`) plus a main column. The main column always shows `AskPanel` at top, then `DocumentFileDetail`/`DocumentFolderDetail`/`WelcomePanel` (with `HealthStatus`) depending on selection.
 
@@ -336,21 +418,23 @@ Single-page app: static `Header` (branding + inert "Documents"/"Ask"/"Summaries"
 
 `AskPanel`: text input + submit, disabled in-flight. Shows "Searching documents…" then (via a client-side `setTimeout`, not real server progress) "Generating answer…" after ~900ms until the single HTTP response resolves. On success: answer text + a 2-column grid of source cards (📄 + filename + `Page N` if present). On failure: red error box with the backend's message.
 
-Processing status shown two places: small icon per file in `FolderTree` (`processingStatus.ts`: ○/⟳/✓/⚠, `processing` spins) and a full status line in `DocumentFileDetail`. "Generate Summary" buttons are `disabled` with a tooltip — do not wire them up without being asked (Phase 5).
+Processing status shown two places: small icon per file in `FolderTree` (`processingStatus.ts`: ○/⟳/✓/⚠, `processing` spins) and a full status line in `DocumentFileDetail`.
 
-## 21. Architectural decisions (why, briefly)
+**`SummaryPanel.tsx` (Phase 5):** self-contained "Generate Summary"/"Regenerate Summary" button + result panel, rendered inside both `DocumentFileDetail` and `DocumentFolderDetail` (replacing the old disabled placeholder buttons), each instance `key`ed by `document.id`/`folder.id` — the same remount-on-selection-change pattern `AskPanel` uses for `QueryScope`, so switching selection always drops a stale summary rather than showing one from a different document/folder. Holds its own `loading`/`result`/`error` state; no caching, no persistence — a summary exists only for the component's lifetime (i.e. until the user selects something else or reloads). Shows a spinner while generating, the summary split into paragraphs on success, a red error box on failure (backend's message verbatim), and a small "Based on N document(s), M indexed chunk(s)" caption (only shown when `documents_included > 0`, so the "nothing indexed yet" message doesn't get an odd trailing caption). Empty-`sources` handling wasn't needed here since summaries have no sources field at all — a genuinely simpler feature than `AskPanel`.
 
-Postgres+pgvector (one DB to run, sufficient at this scale) · local FS storage with UUID filenames + Postgres logical hierarchy (structurally eliminates path traversal, avoids filename collisions) · Alembic (standard, minimal) · synchronous processing everywhere (simpler than a queue; explicitly avoids Celery/Redis/Kafka) · `all-MiniLM-L6-v2` (small, fast, local, no demonstrated need for anything bigger) · `llama3.2` via Ollama HTTP only, never CLI · no HNSW index (premature at this scale) · no LangChain/LlamaIndex (the actual pipeline is a few hundred lines and doesn't benefit from a framework) · no reranking/hybrid search (not needed yet; explicitly not the fix for §15) · backend-generated citations only (the LLM demonstrably can't be trusted to report sources accurately — §11) · no streaming/WebSockets/history (single-turn tool, added complexity not requested) · no authentication (local single-user demo).
+## 25. Architectural decisions (why, briefly)
 
-## 22. Things intentionally NOT built
+Postgres+pgvector (one DB to run, sufficient at this scale) · local FS storage with UUID filenames + Postgres logical hierarchy (structurally eliminates path traversal, avoids filename collisions) · Alembic (standard, minimal) · synchronous processing everywhere (simpler than a queue; explicitly avoids Celery/Redis/Kafka) · `all-MiniLM-L6-v2` (small, fast, local, no demonstrated need for anything bigger) · `llama3.2` via Ollama HTTP only, never CLI · no HNSW index (premature at this scale) · no LangChain/LlamaIndex (the actual pipeline is a few hundred lines and doesn't benefit from a framework) · no reranking/hybrid search (not needed yet; explicitly not the fix for §15) · backend-generated citations only (the LLM demonstrably can't be trusted to report sources accurately — §11) · no streaming/WebSockets/history (single-turn tool, added complexity not requested) · no authentication (local single-user demo) · summarization reuses Phase 4's scope-resolution and Ollama service rather than parallel implementations, but gets its own prompt and no citation mechanism — different task, different failure modes (§16, §18) · summarization has no persistence/caching by design (§16) — regenerated on every click, nothing new in Postgres.
+
+## 26. Things intentionally NOT built
 
 Do not casually introduce: authentication/users, cloud deployment/public hosting, Redis, Celery, Kafka, LangChain, LlamaIndex, any external/paid LLM or embedding API, a second vector database, OCR/scanned-PDF support, Excel/CSV/PPTX ingestion, chat history/persistence, response streaming, WebSockets, hybrid/keyword search, or reranking. If a task seems to need one of these, ask first.
 
-## 23. Known issues / quirks (dev-environment notes, not architectural failures)
+## 27. Known issues / quirks (dev-environment notes, not architectural failures)
 
-Backend on port 8010, Postgres host port 5433 (§4) · Windows stale/phantom TCP listener behavior observed on this dev machine, not a DocIntel bug · `uvicorn --reload` once respawned under the global interpreter, serving stale code (workaround in README) · Phase 3/4 processing and querying are fully synchronous within their HTTP request, by design · Ollama + `llama3.2` must be running locally for `/api/query`; everything else works without it · **the retrieval/source-precision issue in §14–15 is RESOLVED** (LLM-side source selection, retrieval config unchanged) · few-shot prompt examples must never reuse the real document domain's content (§12, discovered while resolving §14–15).
+Backend on port 8010, Postgres host port 5433 (§4) · Windows stale/phantom TCP listener behavior observed on this dev machine, not a DocIntel bug · `uvicorn --reload` once respawned under the global interpreter, serving stale code (workaround in README) · **recurred during Phase 5 testing** — a stale server from an earlier session was found squatting port 8010 under the *global* interpreter (not `.venv`), serving code with no `/api/summarize` route; diagnosed via `wmic process where "ProcessId=<pid>" get CommandLine`, killed, restarted correctly (§19) — if a route you just added seems to 404, check for this before assuming your code is wrong · Phase 3/4/5 processing, querying, and summarization are fully synchronous within their HTTP request, by design · Ollama + `llama3.2` must be running locally for `/api/query` and `/api/summarize`; everything else works without it · **the retrieval/source-precision issue in §14–15 is RESOLVED** (LLM-side source selection, retrieval config unchanged) · few-shot prompt examples must never reuse the real document domain's content, for RAG (§12) or summarization (§18) — discovered independently in both.
 
-## 24. Current state
+## 28. Current state
 
 ```
 PHASE 1 — COMPLETE
@@ -358,46 +442,46 @@ PHASE 2 — COMPLETE
 PHASE 3 — COMPLETE
 PHASE 4 — COMPLETE (all required test/scope/hallucination/failure tests pass, including source-precision fix)
 PHASE 4 RETRIEVAL / SOURCE-PRECISION — RESOLVED (§14–15): LLM evidence selection over backend-issued SOURCE_N labels, retrieval config unchanged
-PHASE 5 — NOT STARTED
+PHASE 5 — COMPLETE (§16–19): document/folder/nested-folder summarization, all 8 required tests pass, zero Phase 4 regressions
+PHASE 6 — NOT STARTED, NOT DESIGNED
 ```
 
-## 25. Next immediate task
+## 29. Next immediate task
 
-None assigned as of this update — §14–15 is resolved and re-verified (§13). Phase 5 (summarization, §26) has not been started and should not be started without explicit instruction (§28 rule 11).
+None assigned as of this update — Phase 5 is complete and re-verified (§19). No Phase 6 scope has been defined; don't invent one without explicit instruction (§31 rule 11).
 
-## 26. Future: Phase 5 (not started, not designed in detail)
+## 30. Future phases (broad, not over-specified)
 
-Intended to implement **"Generate Summary"** for a document, a folder, and a nested folder — the disabled buttons in `DocumentDetail.tsx` are the intended hook-in point. Should reuse `extraction_service`/`chunking_service` for text, `ollama_service.generate_answer` (or a close variant) for the LLM call, and likely `document_service.collect_documents_under_folder` for folder-level summaries. Do not implement now — the retrieval issue (§15) should be resolved first.
+Phase 5 (summarization) is complete — see §16–19. Later, undesigned: UI polish, broader testing, documentation, demo/report prep for the internship deliverable. No concrete plans exist yet for these — don't invent scope.
 
-## 27. Future phases (broad, not over-specified)
-
-Phase 5: summarization (§26). Later, undesigned: UI polish, broader testing, documentation, demo/report prep for the internship deliverable. No concrete plans exist yet for these — don't invent scope.
-
-## 28. Instructions for future Claude
+## 31. Instructions for future Claude
 
 1. Inspect the actual current code before modifying anything — this document is a snapshot and will drift.
-2. Treat existing functionality as intentional unless you can demonstrate an actual problem (§21 has the reasoning).
+2. Treat existing functionality as intentional unless you can demonstrate an actual problem (§25 has the reasoning).
 3. Don't rewrite working architecture unnecessarily — small, targeted changes over rewrites.
 4. Preserve the free/local requirement absolutely.
 5. Don't add infrastructure (Redis/Celery/Kafka/second vector DB/etc.) without being explicitly asked.
-6. Reuse existing services — especially `collect_documents_under_folder`, `embedding_service.embed_texts`, `ollama_service.generate_answer` — rather than parallel implementations.
+6. Reuse existing services — especially `collect_documents_under_folder`, `retrieval_service.resolve_scope_document_ids`, `embedding_service.embed_texts`, `ollama_service.generate_answer` — rather than parallel implementations.
 7. Reuse the existing embedding model and LLM unless explicitly told to change them.
 8. Preserve API compatibility where practical; if a response shape must change, update `frontend/lib/api.ts` types together with it.
-9. Test after modifications — the synthetic dataset and §13's regression set exist so changes can be verified, not assumed.
+9. Test after modifications — the synthetic dataset and §13's/§19's regression sets exist so changes can be verified, not assumed.
 10. Don't claim functionality is implemented/fixed/verified without actually running it.
 11. Don't start a future phase without explicit instruction.
-12. Update this document after major completed phases or after resolving the open retrieval issue, using the same "inspect the repo first" discipline.
+12. Update this document after major completed phases or after resolving an open issue, using the same "inspect the repo first" discipline.
 13. Treat this document as orientation; treat the repository as ultimate truth when they disagree.
 14. §14–15 is resolved (LLM-side source selection); don't re-open it by reducing `RAG_TOP_K`/raising `RAG_SIMILARITY_THRESHOLD` to chase precision — that path was investigated and proven not to work (§15 Step 1).
 15. **Never solve retrieval precision by blindly reducing `RAG_TOP_K` (or otherwise starving retrieval) if it breaks multi-document questions like the "42 trains" test.** Investigate first; change minimally. (This is now a permanent rule, not just historical context — it's exactly what the §14–15 investigation proved.)
-16. **Never let a few-shot example in `rag_service.SYSTEM_PROMPT` reuse content from the real document domain** (route names, dates, counts that resemble the actual corpus). This caused `llama3.2:3B` to confuse example data with real context and refuse answerable questions — discovered and fixed during §14–15 (§12). Any future prompt edit must keep examples in an unrelated generic domain.
+16. **Never let a few-shot example in a system prompt reuse content from the real document domain** (route names, dates, counts that resemble the actual corpus) — for RAG (`rag_service.SYSTEM_PROMPT`, §12) or for summarization (`summary_service.SUMMARY_SYSTEM_PROMPT`/`SUMMARY_COMBINE_SYSTEM_PROMPT`, §18). This caused `llama3.2:3B` to confuse example data with real context in both features, independently, when first tried. Any future prompt (RAG, summarization, or otherwise) must keep examples in an unrelated generic domain.
+17. **Summarization (§16–18) has two independent, evidence-based safeguards — don't remove or "simplify" either without re-testing against the 5-document nested-folder case:** `SUMMARY_MAX_CONTEXT_CHARS` (character budget) and `SUMMARY_SINGLE_PASS_MAX_DOCUMENTS` (document-count budget, currently 3). They guard against two *different* failure modes (oversized prompts vs. single-pass detail-merging across many documents) — a large-but-few-documents case and a small-but-many-documents case are both real, independently observed problems, not the same problem twice.
+18. **Never compute a combined numeric total in a summarization prompt** unless the source material already states that exact total — `summary_service`'s prompts forbid this after observing `llama3.2:3B` compute an incorrect total (39 instead of 42) when allowed to. Listing individual figures side by side (per date/document) is the correct pattern; if extending or rewriting these prompts, preserve this rule and its worked example.
+19. Before assuming a code change isn't taking effect (a new route 404s, old behavior persists), check for a stale server process on the target port running under the wrong Python interpreter (§4, §27) — this has now happened at least twice on this dev machine.
 
-## 29. Changelog
+## 32. Changelog
 
 - **Phase 1:** Foundation — FastAPI + Next.js + Postgres/pgvector + Docker Compose, `/api/health`, env-driven config. Complete.
 - **Phase 2:** Files/folders/storage — upload (single/multiple/folder/nested), UUID physical storage + Postgres logical hierarchy, tree UI, deletion, duplicate replacement, path-traversal protection. Complete.
 - **Phase 3:** Extraction/chunking/embeddings — PyMuPDF/python-docx/TXT, whitespace-only cleaning, ~1200/~200 chunking, local `all-MiniLM-L6-v2` (384-dim) in pgvector, synchronous pipeline with status tracking. Complete.
 - **Phase 4:** RAG Q&A — `POST /api/query`, `all`/`folder`/`document` scope, pgvector cosine retrieval, grounded `llama3.2` via Ollama HTTP, backend-computed deduplicated citations, `AskPanel` UI. Implemented; all specified regression tests pass.
 - **Phase 4 source-precision fix (§14–15):** Investigated whether `RAG_TOP_K`/`RAG_SIMILARITY_THRESHOLD` tuning could narrow displayed sources for narrow questions without breaking multi-document retrieval — a threshold sweep (0.20–0.65) proved it could not (no threshold satisfies both Test 1 precision and Test 2 completeness; any threshold high enough to help precision also breaks the maintenance test). Resolved instead via LLM-side evidence selection: retrieval stays unchanged (`TOP_K=8`, `THRESHOLD=0.2`), but each retrieved chunk is labeled with a backend-generated, request-scoped `SOURCE_N` id, and Ollama (via native structured JSON output) returns `{"answer", "supporting_source_ids"}` identifying which labels its answer actually relies on. The LLM can only select from ids it was given — never invent one or supply metadata directly; backend validation (`rag_service._parse_and_validate_llm_output`) discards any unknown id and falls back safely on malformed output. Fixed one prompt pitfall along the way: few-shot examples must not reuse the real document domain's content (§12). All Phase 4 regression tests re-verified, including two 5x reliability runs and adversarial backend-validation unit tests. Frontend unchanged (already handled zero sources). **Phase 4 is now complete.**
-- **Phase 5:** Not started — placeholder for summarization (§26).
-- **Later phases:** Not started, not designed — placeholder for UI polish, testing, documentation, demo prep (§27).
+- **Phase 5 (§16–19):** Summarization — `POST /api/summarize`, `document`/`folder` scope (`folder` recursive into nested subfolders), reusing Phase 4's `retrieval_service.resolve_scope_document_ids` and Phase 1/4's `ollama_service` rather than new scope/LLM-client logic. Builds a reading-order context from already-indexed chunks (no new extraction/chunking/embedding), summarizes in a single pass by default, falling back to a two-stage map→combine strategy when either an empirically-derived document-count threshold (3) or a character budget (12,000, ~4.4x the real corpus's actual size) is exceeded — both thresholds grounded in real measurements against `test-data/NHSRCL-Demo`, not guessed. Two real numeric-fidelity bugs were found and fixed during implementation, both in `llama3.2:3B`'s handling of numbers during synthesis (distinct from Phase 4's arithmetic issue): (1) inventing an incorrect combined total across documents/dates (39 instead of 42) — fixed by forbidding computed totals in the prompt entirely, with a worked example; (2) merging/mislabeling a single document's own adjacent figures once several other documents' content was also being synthesized in one pass (a source's "6 track + 4 signal" becoming "10 track + 4 signal") — fixed architecturally via the document-count map→combine trigger, not further prompt tuning. No new database tables/migrations; summaries are never persisted or cached. No citations — a deliberate scope decision, not an oversight. Frontend: new `SummaryPanel.tsx` wired into both `DocumentFileDetail`/`DocumentFolderDetail`, replacing the disabled placeholder buttons. All 8 required tests pass (single document, folder, nested folder, scope isolation, numeric preservation, empty scope, Ollama unavailable, Phase 4 regression); `npm run lint`/`npm run build` pass; backend imports/compiles cleanly. **Phase 5 is now complete.**
+- **Later phases:** Not started, not designed — placeholder for UI polish, testing, documentation, demo prep (§30).

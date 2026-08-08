@@ -2,19 +2,7 @@ import type { DocumentItem, FolderNode } from "@/lib/api";
 import { formatBytes, formatDate } from "@/lib/format";
 import { countContents } from "@/lib/tree";
 import { PROCESSING_STATUS_DISPLAY } from "@/lib/processingStatus";
-
-function GenerateSummaryButton() {
-  return (
-    <button
-      type="button"
-      disabled
-      title="AI-generated summaries arrive in a later phase"
-      className="cursor-not-allowed rounded-md border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-400"
-    >
-      Generate Summary
-    </button>
-  );
-}
+import SummaryPanel from "@/components/document/SummaryPanel";
 
 export function DocumentFileDetail({ document }: { document: DocumentItem }) {
   return (
@@ -56,9 +44,7 @@ export function DocumentFileDetail({ document }: { document: DocumentItem }) {
         </dd>
       </dl>
 
-      <div className="mt-6">
-        <GenerateSummaryButton />
-      </div>
+      <SummaryPanel key={document.id} scope={{ type: "document", id: document.id }} />
     </div>
   );
 }
@@ -84,9 +70,7 @@ export function DocumentFolderDetail({ folder }: { folder: FolderNode }) {
         </p>
       </div>
 
-      <div className="mt-6">
-        <GenerateSummaryButton />
-      </div>
+      <SummaryPanel key={folder.id} scope={{ type: "folder", id: folder.id }} />
     </div>
   );
 }

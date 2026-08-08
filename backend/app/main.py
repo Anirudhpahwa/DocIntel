@@ -5,6 +5,7 @@ Phase 1: application bootstrap, CORS, and the /api/health endpoint.
 Phase 2: document/folder upload, storage, and browsing.
 Phase 3: text extraction, chunking, and local embeddings.
 Phase 4: RAG question answering over the indexed chunks.
+Phase 5: document/folder summarization over the same indexed chunks.
 """
 
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import documents, folders, health, query
+from app.api import documents, folders, health, query, summarize
 from app.config import settings
 from app.services.storage_service import ensure_storage_dirs
 
@@ -23,7 +24,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="DocIntel API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="DocIntel API", version="0.5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +38,7 @@ app.include_router(health.router)
 app.include_router(documents.router)
 app.include_router(folders.router)
 app.include_router(query.router)
+app.include_router(summarize.router)
 
 
 @app.get("/")

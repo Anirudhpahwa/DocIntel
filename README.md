@@ -25,7 +25,7 @@ overlapping chunks, embedded locally with Sentence Transformers, and stored
 in PostgreSQL via pgvector — no external AI API involved. The document tree
 shows each file's processing status (indexed / processing / failed).
 
-**Phase 4 — RAG question answering (current):** users ask a plain-English
+**Phase 4 — RAG question answering:** users ask a plain-English
 question — optionally scoped to a selected document or folder — and get a
 grounded answer plus cited sources. The question is embedded with the same
 local model used for chunks, relevant chunks are retrieved from pgvector by
@@ -37,8 +37,17 @@ which of the retrieved chunks actually support its answer, so the source
 list shown to the user can be narrower than what was retrieved without
 narrowing retrieval itself.
 
-**Not yet implemented** (later phases): summarization, the "Generate
-Summary" button remains a disabled placeholder.
+**Phase 5 — Summarization (current):** users select a document or a folder
+(including nested subfolders) and click "Generate Summary" to get a
+natural-language summary grounded only in that selection's already-indexed
+chunks — no new extraction/chunking pipeline, no re-reading files from disk.
+A folder's documents are synthesized into one coherent summary (not several
+disconnected per-file summaries), reusing the same `llama3.2` model via a
+dedicated summarization prompt (distinct from the RAG Q&A prompt). No
+citations are attached to summaries — this is a different task from Phase 4
+Q&A, and forcing the `SOURCE_N` citation-selection mechanism in here wasn't
+worth the complexity for a feature that's meant to give an overview, not
+answer a specific question.
 
 ## Tech stack
 
@@ -61,7 +70,7 @@ docintel/
 │   ├── alembic/                # Schema migrations
 │   │   └── versions/
 │   ├── app/
-│   │   ├── api/                  # FastAPI routers: health, documents, folders
+│   │   ├── api/                  # FastAPI routers: health, documents, folders, query, summarize
 │   │   ├── services/
 │   │   │   ├── storage_service.py           # physical file I/O (Phase 2)
 │   │   │   ├── document_service.py          # folders/documents CRUD, tree (Phase 2)
@@ -69,9 +78,10 @@ docintel/
 │   │   │   ├── chunking_service.py          # clean + chunk text (Phase 3)
 │   │   │   ├── embedding_service.py         # Sentence Transformers (Phase 3 + 4)
 │   │   │   ├── document_processing_service.py  # orchestrates the above (Phase 3)
-│   │   │   ├── retrieval_service.py         # scope resolution + pgvector search (Phase 4)
+│   │   │   ├── retrieval_service.py         # scope resolution + pgvector search (Phase 4, reused by Phase 5)
 │   │   │   ├── rag_service.py               # RAG orchestration + system prompt (Phase 4)
-│   │   │   └── ollama_service.py            # health check + answer generation
+│   │   │   ├── summary_service.py           # summarization orchestration + prompts (Phase 5)
+│   │   │   └── ollama_service.py            # health check + answer generation (Phase 1/4/5)
 │   │   ├── models/               # SQLAlchemy: Folder, Document, DocumentChunk
 │   │   ├── config.py             # Environment-based settings
 │   │   ├── db.py                 # SQLAlchemy engine/session + declarative Base
@@ -83,7 +93,7 @@ docintel/
 ├── frontend/
 │   ├── app/                       # Next.js App Router pages
 │   ├── components/
-│   │   ├── document/                # DocumentExplorer, FolderTree, DocumentDetail, UploadControls, AskPanel
+│   │   ├── document/                # DocumentExplorer, FolderTree, DocumentDetail, UploadControls, AskPanel, SummaryPanel
 │   │   ├── Header.tsx, HealthStatus.tsx, WelcomePanel.tsx
 │   ├── lib/                        # api.ts, format.ts, tree.ts, processingStatus.ts
 │   └── package.json
@@ -470,10 +480,163 @@ All new settings live in `Settings` (`app/config.py`), not hardcoded:
 `RAG_MAX_QUESTION_LENGTH` (2000), `OLLAMA_TIMEOUT_SECONDS` (60),
 `OLLAMA_TEMPERATURE` (0.0).
 
+## Summarization (Phase 5)
+
+### API
+
+```
+POST /api/summarize
+{ "scope": { "type": "document", "id": 15 } }   // or:
+  "scope": { "type": "folder", "id": 3 }        // folder + all nested subfolders
+```
+
+`scope` reuses Phase 4's `QueryScope` schema as-is (same `{type, id}` shape,
+same Pydantic validation requiring `id` for these types) rather than
+introducing a parallel scope schema — `"all"` is structurally accepted by
+that shared schema but is explicitly rejected by the summarization service
+with a `422`, since summarization always targets one specific selection,
+never the whole corpus.
+
+Response:
+
+```json
+{
+  "summary": "…generated summary…",
+  "documents_included": 3,
+  "chunks_used": 6
+}
+```
+
+No `SOURCE_N` identifiers, chunk ids, or other internal metadata are
+exposed — just the summary text and two small counts. Errors: `422` invalid
+scope (`"all"`, or missing `id` for `"document"`/`"folder"`), `404` unknown
+document/folder id, `503` Ollama unavailable, `500` unexpected.
+
+### Pipeline
+
+```
+scope (document or folder) -> resolve to a document-id set
+    (retrieval_service.resolve_scope_document_ids, reused unchanged from
+    Phase 4 -- folder scope includes all nested subfolders, "indexed"-only)
+  -> load already-indexed DocumentChunk rows for those documents
+    (no new extraction/chunking/embedding pipeline -- Phase 3 already
+    produced these)
+  -> build a reading-order context: "DOCUMENT N / Name / SOURCE_CHUNK_N /
+    Page / text" per document, chunks ordered by chunk_index (not
+    similarity rank -- there's no question to rank against)
+  -> Ollama llama3.2 via ollama_service.generate_answer (the existing
+    plain-text primitive -- no structured JSON needed, unlike Phase 4 Q&A)
+  -> summary text
+```
+
+Router (`app/api/summarize.py`) stays thin; all logic is in
+`summary_service.py`, mirroring `query.py` / `rag_service.py`'s
+relationship. No new database tables or migrations — summaries are
+generated fresh on every request and exist only in the HTTP response and,
+client-side, in `SummaryPanel`'s component state for the current session
+(never persisted, never cached, matching the Phase 5 spec).
+
+### Document vs. folder scope
+
+- `"document"` — every chunk belonging to that one document.
+- `"folder"` — reuses `document_service.collect_documents_under_folder`
+  (via the same `retrieval_service.resolve_scope_document_ids` helper
+  Phase 4 uses) to resolve every document in the folder **and all nested
+  subfolders**, then loads every chunk belonging to any of them. No
+  separate folder-traversal logic exists for summarization.
+
+Both scopes additionally filter to `processing_status = "indexed"` — a
+document still processing, failed, or a folder containing only such
+documents summarizes to a clear "nothing indexed yet" message
+(`summary_service.NO_INDEXED_CONTENT_MESSAGE`) without ever calling Ollama.
+An empty folder (no documents at all) short-circuits the same way.
+
+### Context-size strategy
+
+Chosen only after measuring the actual dataset, not assumed: the entire
+`test-data/NHSRCL-Demo` corpus (5 documents, 8 chunks) is **~2,700
+characters total** — comfortably inside a single prompt. So the default
+path is the simplest one: build one context block from all the scope's
+chunks, send one summarization prompt, done.
+
+Two independent, evidence-based triggers fall back to a two-stage
+map → combine strategy instead of one oversized/overloaded prompt:
+
+1. **`SUMMARY_MAX_CONTEXT_CHARS`** (default 12,000 characters) — a hard
+   size budget. Real corpus is ~2,700 chars, so this leaves generous
+   headroom while still protecting against a genuinely large future upload.
+2. **`SUMMARY_SINGLE_PASS_MAX_DOCUMENTS`** (default 3) — found empirically,
+   not guessed: testing `llama3.2:3B` on this project's own corpus, a
+   3-document single-pass folder summary (`Operations`) was reliable across
+   repeated runs, but a 5-document single-pass summary (`NHSRCL-Demo`,
+   nested) occasionally merged/mislabeled a single document's own numbers —
+   e.g. a source stating "6 track inspections and 4 signal inspections"
+   came back as "10 track inspections and 4 signal inspections" once the
+   model also had four other documents' worth of dense figures to
+   synthesize into one summary in a single pass. Routing anything above 3
+   documents through map → combine instead — summarizing each document
+   individually first (verified reliable in isolation) and combining those
+   short, already-correct summaries afterward — eliminated the error across
+   repeated runs.
+
+When either trigger fires, `summary_service._generate_map_reduce`
+summarizes each document individually (with `SUMMARY_SYSTEM_PROMPT`, the
+same prompt as the single-pass path), then combines the resulting short
+summaries with a second, distinct prompt (`SUMMARY_COMBINE_SYSTEM_PROMPT`).
+If even one document's own content exceeds the character budget on its own
+(not reachable with the current test corpus), its chunks are
+deterministically truncated in `chunk_index` order — kept until the budget
+fills, tail dropped — and the resulting mini-summary is flagged with a
+short "(Note: ... truncated ...)" suffix so truncation is never silent.
+This is exactly two stages, not a general recursive/hierarchical framework —
+chosen because it's the simplest approach that still lets the model
+reconcile facts across every document.
+
+`SUMMARY_NUM_CTX` (default 8192) is passed as Ollama's `num_ctx` option on
+summarization calls only (never on Phase 4's RAG calls, which are
+untouched) — set explicitly rather than relying on Ollama's undocumented
+default context window, since summarization prompts can legitimately be
+longer than a single RAG question.
+
+### Summarization prompt
+
+`summary_service.SUMMARY_SYSTEM_PROMPT` and `SUMMARY_COMBINE_SYSTEM_PROMPT`
+are dedicated prompts, not a reuse of `rag_service.SYSTEM_PROMPT` —
+summarizing has no question to ground an answer against and no citation
+selection, so it's a genuinely different task with different failure modes
+to guard against. Both instruct the model to: treat the supplied content as
+its only source of truth; never invent facts, numbers, dates, or names;
+preserve important figures exactly as given; synthesize across documents
+rather than writing disconnected per-document summaries; and say so plainly
+if the content is too sparse to summarize meaningfully, rather than
+inventing filler.
+
+**A specific failure mode was found and fixed during testing:** early
+prompt versions allowed the model to compute a combined total across
+documents/dates (e.g. summing daily counts into a multi-day total). Testing
+showed `llama3.2:3B` sometimes computed this arithmetic incorrectly
+(observed: 14 + 12 + 16 miscalculated as 39 in one run) — a real numeric
+hallucination distinct from Phase 4's issue, since here nothing prompted
+double-checking the arithmetic. Both prompts now explicitly forbid
+computing any combined total (an accompanying worked example makes the
+required pattern concrete — list each date/document's own figure side by
+side, e.g. "5 on Monday, 7 on Tuesday, 3 on Wednesday", never "15 total"),
+and only state a total if the source material already states that exact
+total itself. Per the lesson learned in Phase 4 (§ system prompt above),
+this worked example deliberately uses a generic, unrelated domain rather
+than anything resembling the real train-report corpus.
+
+### What was deliberately left out
+
+No citations/`SOURCE_N` selection (different task from Q&A, not worth the
+added complexity here — see rules above), no caching (every click
+regenerates), no persistence to Postgres (no new tables/migrations — a
+summary lives only in the response and the frontend's component state for
+that session), no background workers/queues (synchronous, same as every
+other pipeline in this project).
+
 ## Notes
 
-- No paid API is used anywhere in this project. Embeddings and question
-  answering both run 100% locally (Sentence Transformers + Ollama) after
-  their one-time model downloads.
-- Summarization is intentionally out of scope so far — see "Scope so far"
-  above.
+- No paid API is used anywhere in this project. Embeddings, question
+  answering, and summarization all run 100% locally (Sentence Transformers
+  + Ollama) after their one-time model downloads.

@@ -54,6 +54,36 @@ class Settings(BaseSettings):
     # numeric synthesis, without making it totally rigid.
     ollama_temperature: float = 0.0
 
+    # Phase 5: summarization settings. Character budget for the built
+    # summarization context (DOCUMENT/SOURCE_CHUNK blocks, see
+    # summary_service.py) above which a single-pass prompt is abandoned in
+    # favor of a two-stage map->combine summarization instead. Measured
+    # against test-data/NHSRCL-Demo: the entire nested corpus (5 documents,
+    # 8 chunks) is ~2,700 characters total, so 12,000 leaves generous
+    # headroom while still comfortably fitting the single-pass path for
+    # this project's actual demo scale — see README for the measurement.
+    summary_max_context_chars: int = 12000
+    # Explicit num_ctx for summarization Ollama calls only (never applied to
+    # the unmodified Phase 4 RAG generation path). Summarization prompts can
+    # legitimately be longer than a single RAG question, so this is set
+    # generously rather than relying on Ollama's undocumented default
+    # context window; llama3.2 supports up to 131072 so 8192 is trivial for it.
+    summary_num_ctx: int = 8192
+    # A second, independent trigger for the map->combine fallback, on top of
+    # summary_max_context_chars: even a small folder (well under the char
+    # budget) is routed through map->combine once it holds more than this
+    # many documents. Empirically justified, not a guess -- testing
+    # llama3.2:3B against test-data/NHSRCL-Demo found a 3-document folder
+    # synthesized reliably in one pass, but a 5-document folder in one pass
+    # occasionally merged/mislabeled a single document's own numbers (a
+    # source stating "6 track inspections and 4 signal inspections" came
+    # back as "10 track inspections and 4 signal inspections" in the
+    # single-pass output). Summarizing each document individually first
+    # (proven reliable in isolation) and combining those short summaries
+    # afterward eliminated the error across repeated runs. See README for
+    # the measurement.
+    summary_single_pass_max_documents: int = 3
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

@@ -51,22 +51,32 @@ async def check_ollama_available() -> bool:
 
 
 async def _call_generate(
-    system_prompt: str, user_prompt: str, response_format: dict | None = None
+    system_prompt: str,
+    user_prompt: str,
+    response_format: dict | None = None,
+    extra_options: dict | None = None,
 ) -> dict:
     """
     Shared low-level call to Ollama's /api/generate. `response_format`,
     when given, is passed through as Ollama's `format` field (a JSON
-    schema) to constrain the model's output shape. Raises
+    schema) to constrain the model's output shape. `extra_options`, when
+    given, is merged into the request's `options` object on top of the
+    default temperature (e.g. Phase 5 summarization sets `num_ctx` this
+    way; no existing caller passes it, so this is purely additive and
+    changes nothing for Phase 4's RAG generation). Raises
     OllamaUnavailableError on any connection failure or non-2xx response —
-    the only error handling shared by both callers below.
+    the only error handling shared by all callers below.
     """
     url = f"{settings.ollama_base_url}/api/generate"
+    options = {"temperature": settings.ollama_temperature}
+    if extra_options:
+        options.update(extra_options)
     payload = {
         "model": settings.ollama_model,
         "system": system_prompt,
         "prompt": user_prompt,
         "stream": False,
-        "options": {"temperature": settings.ollama_temperature},
+        "options": options,
     }
     if response_format is not None:
         payload["format"] = response_format
@@ -84,16 +94,19 @@ async def _call_generate(
         ) from exc
 
 
-async def generate_answer(system_prompt: str, user_prompt: str) -> str:
+async def generate_answer(
+    system_prompt: str, user_prompt: str, extra_options: dict | None = None
+) -> str:
     """
     Ask the configured Ollama model to answer, given a system prompt and a
     user prompt, and return the raw text response. Single-turn,
-    non-streaming. Kept as a plain-text primitive (unused by rag_service's
-    Phase 4 query path as of the source-selection change below, but left
-    intact for reuse — e.g. Phase 5 summarization has no need for
-    source-selection JSON).
+    non-streaming. A plain-text primitive — unused by rag_service's Phase 4
+    query path (which needs structured source-selection JSON instead, see
+    generate_answer_with_sources below), but reused as-is by Phase 5's
+    summary_service, which has no need for that JSON shape and only adds
+    `extra_options={"num_ctx": ...}` on top of the same call.
     """
-    data = await _call_generate(system_prompt, user_prompt)
+    data = await _call_generate(system_prompt, user_prompt, extra_options=extra_options)
     answer = (data.get("response") or "").strip()
     if not answer:
         raise OllamaUnavailableError("Ollama returned an empty response")

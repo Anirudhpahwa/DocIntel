@@ -170,3 +170,35 @@ export async function askQuestion(question: string, scope: QueryScope): Promise<
 
   return response.json();
 }
+
+// ---- Summarization (Phase 5) ----
+
+/** Summarization always targets one specific selection -- unlike QueryScope, "all" isn't offered. */
+export type SummaryScope = { type: "document" | "folder"; id: number };
+
+export interface SummarizeResponse {
+  summary: string;
+  documents_included: number;
+  chunks_used: number;
+}
+
+export async function generateSummary(scope: SummaryScope): Promise<SummarizeResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/summarize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null);
+    const message =
+      typeof detail?.detail === "string"
+        ? detail.detail
+        : Array.isArray(detail?.detail) && detail.detail[0]?.msg
+          ? detail.detail[0].msg
+          : `Summary generation failed (status ${response.status})`;
+    throw new Error(message);
+  }
+
+  return response.json();
+}

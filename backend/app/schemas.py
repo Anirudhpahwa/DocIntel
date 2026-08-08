@@ -127,3 +127,23 @@ class LLMAnswerWithSources(BaseModel):
 
     answer: str
     supporting_source_ids: list[str] = []
+
+
+# ---- Summarization (Phase 5) ----
+
+
+class SummarizeRequest(BaseModel):
+    # Reuses QueryScope as-is rather than defining a parallel scope schema —
+    # same {"type", "id"} shape, same Pydantic validation (id required for
+    # "folder"/"document"). "all" is structurally accepted here too (Pydantic
+    # can't express "all Literal values except one" without a new type), but
+    # summary_service.generate_summary explicitly rejects it with a 422 —
+    # summarization always targets one specific document or folder, never
+    # the whole corpus, per the Phase 5 spec.
+    scope: QueryScope
+
+
+class SummarizeResponse(BaseModel):
+    summary: str
+    documents_included: int
+    chunks_used: int
