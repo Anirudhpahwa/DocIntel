@@ -12,8 +12,11 @@ interface FolderTreeProps {
   selection: Selection;
   onSelectFolder: (id: number) => void;
   onSelectDocument: (id: number) => void;
-  onDeleteFolder: (folder: FolderNode) => void;
-  onDeleteDocument: (document: FolderNode["documents"][number]) => void;
+  // Optional: read-only usages (e.g. the Ask/Summaries workspaces, Phase 6)
+  // omit these to select scope without exposing delete actions. When
+  // omitted, the per-row delete button simply isn't rendered.
+  onDeleteFolder?: (folder: FolderNode) => void;
+  onDeleteDocument?: (document: FolderNode["documents"][number]) => void;
   depth?: number;
 }
 
@@ -70,8 +73,8 @@ function FolderRow({
   selection: Selection;
   onSelectFolder: (id: number) => void;
   onSelectDocument: (id: number) => void;
-  onDeleteFolder: (folder: FolderNode) => void;
-  onDeleteDocument: (document: FolderNode["documents"][number]) => void;
+  onDeleteFolder?: (folder: FolderNode) => void;
+  onDeleteDocument?: (document: FolderNode["documents"][number]) => void;
   depth: number;
 }) {
   const [expanded, setExpanded] = useState(depth === 0);
@@ -103,15 +106,17 @@ function FolderRow({
           <span aria-hidden>{FOLDER_ICON}</span>
           <span className="truncate">{folder.name}</span>
         </button>
-        <button
-          type="button"
-          onClick={() => onDeleteFolder(folder)}
-          className="hidden shrink-0 rounded px-1 text-xs text-slate-400 hover:bg-red-50 hover:text-red-600 group-hover:block"
-          aria-label={`Delete folder ${folder.name}`}
-          title="Delete folder"
-        >
-          &times;
-        </button>
+        {onDeleteFolder && (
+          <button
+            type="button"
+            onClick={() => onDeleteFolder(folder)}
+            className="hidden shrink-0 rounded px-1 text-xs text-slate-400 hover:bg-red-50 hover:text-red-600 group-hover:block"
+            aria-label={`Delete folder ${folder.name}`}
+            title="Delete folder"
+          >
+            &times;
+          </button>
+        )}
       </div>
 
       {expanded && !isEmpty && (
@@ -139,7 +144,7 @@ function DocumentRow({
   document: FolderNode["documents"][number];
   selected: boolean;
   onSelect: (id: number) => void;
-  onDelete: (document: FolderNode["documents"][number]) => void;
+  onDelete?: (document: FolderNode["documents"][number]) => void;
 }) {
   return (
     <li>
@@ -173,15 +178,17 @@ function DocumentRow({
             </span>
           );
         })()}
-        <button
-          type="button"
-          onClick={() => onDelete(document)}
-          className="hidden shrink-0 rounded px-1 text-xs text-slate-400 hover:bg-red-50 hover:text-red-600 group-hover:block"
-          aria-label={`Delete ${document.name}`}
-          title="Delete file"
-        >
-          &times;
-        </button>
+        {onDelete && (
+          <button
+            type="button"
+            onClick={() => onDelete(document)}
+            className="hidden shrink-0 rounded px-1 text-xs text-slate-400 hover:bg-red-50 hover:text-red-600 group-hover:block"
+            aria-label={`Delete ${document.name}`}
+            title="Delete file"
+          >
+            &times;
+          </button>
+        )}
       </div>
     </li>
   );

@@ -37,7 +37,7 @@ which of the retrieved chunks actually support its answer, so the source
 list shown to the user can be narrower than what was retrieved without
 narrowing retrieval itself.
 
-**Phase 5 — Summarization (current):** users select a document or a folder
+**Phase 5 — Summarization:** users select a document or a folder
 (including nested subfolders) and click "Generate Summary" to get a
 natural-language summary grounded only in that selection's already-indexed
 chunks — no new extraction/chunking pipeline, no re-reading files from disk.
@@ -48,6 +48,16 @@ citations are attached to summaries — this is a different task from Phase 4
 Q&A, and forcing the `SOURCE_N` citation-selection mechanism in here wasn't
 worth the complexity for a feature that's meant to give an overview, not
 answer a specific question.
+
+**Phase 6 — Application navigation & UI structure (current):** the
+top navigation (Dashboard / Documents / Ask / Summaries) is now real
+Next.js routing — `/`, `/documents`, `/ask`, `/summaries` — instead of
+inert placeholder text, with the active page visually distinct in the
+header. Dashboard is a plain overview + system status page; Documents,
+Ask, and Summaries are dedicated workspaces that each reuse the same
+document-tree/selection logic and UI components (`AskPanel`,
+`SummaryPanel`, the folder tree) rather than three separate
+implementations. Frontend-only: no backend, API, or database changes.
 
 ## Tech stack
 
@@ -91,11 +101,11 @@ docintel/
 │   ├── requirements.txt
 │   └── .env                       # local only, not committed
 ├── frontend/
-│   ├── app/                       # Next.js App Router pages
+│   ├── app/                       # Next.js App Router pages: /, /documents, /ask, /summaries
 │   ├── components/
-│   │   ├── document/                # DocumentExplorer, FolderTree, DocumentDetail, UploadControls, AskPanel, SummaryPanel
+│   │   ├── document/                # DocumentExplorer, DocumentSidebar, FolderTree, DocumentDetail, UploadControls, AskPanel, SummaryPanel
 │   │   ├── Header.tsx, HealthStatus.tsx, WelcomePanel.tsx
-│   ├── lib/                        # api.ts, format.ts, tree.ts, processingStatus.ts
+│   ├── lib/                        # api.ts, format.ts, tree.ts, processingStatus.ts, useDocumentTree.ts
 │   └── package.json
 ├── storage/                      # Uploaded files (local-only, gitignored)
 │   └── documents/
