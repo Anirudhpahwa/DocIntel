@@ -5,6 +5,13 @@ import { uploadDocuments, type UploadResponse } from "@/lib/api";
 
 interface UploadControlsProps {
   onUploaded: () => void;
+  // "sidebar" (default): the original stacked, compact buttons used in
+  // DocumentSidebar (also reused read-only-free by Ask/Summaries, though
+  // they never pass onUploaded so this component doesn't render there).
+  // "toolbar": prominent side-by-side buttons for the Documents page header
+  // (Phase 6A) — same upload logic/inputs, just a different button layout,
+  // so there is still exactly one upload implementation.
+  variant?: "sidebar" | "toolbar";
 }
 
 function relativePathOf(file: File): string {
@@ -14,7 +21,7 @@ function relativePathOf(file: File): string {
     : file.name;
 }
 
-export default function UploadControls({ onUploaded }: UploadControlsProps) {
+export default function UploadControls({ onUploaded, variant = "sidebar" }: UploadControlsProps) {
   const filesInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -50,8 +57,8 @@ export default function UploadControls({ onUploaded }: UploadControlsProps) {
     }
   }
 
-  return (
-    <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+  const inputs = (
+    <>
       <input
         ref={filesInputRef}
         type="file"
@@ -73,6 +80,45 @@ export default function UploadControls({ onUploaded }: UploadControlsProps) {
           e.target.value = "";
         }}
       />
+    </>
+  );
+
+  if (variant === "toolbar") {
+    return (
+      <div className="flex flex-col items-end gap-2">
+        {inputs}
+        <div className="flex items-center gap-2">
+          {uploading && <span className="text-xs text-slate-400">Uploading…</span>}
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => filesInputRef.current?.click()}
+            className="rounded-md border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Upload Files
+          </button>
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => folderInputRef.current?.click()}
+            className="rounded-md bg-slate-900 px-3.5 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Upload Folder
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        {result && (
+          <div className="w-full max-w-sm">
+            <UploadResultSummary result={result} onDismiss={() => setResult(null)} />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+      {inputs}
 
       <button
         type="button"
