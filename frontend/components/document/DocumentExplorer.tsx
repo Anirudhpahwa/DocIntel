@@ -7,7 +7,8 @@ import UploadControls from "@/components/document/UploadControls";
 import Breadcrumbs from "@/components/document/Breadcrumbs";
 import FolderCard from "@/components/document/FolderCard";
 import FileRow from "@/components/document/FileRow";
-import { DocumentFileDetail, DocumentFolderDetail } from "@/components/document/DocumentDetail";
+import { DocumentFolderDetail } from "@/components/document/DocumentDetail";
+import DocumentPreview from "@/components/document/DocumentPreview";
 
 /**
  * Walks the tree from the root using a chain of folder ids, stopping at the
@@ -44,10 +45,18 @@ function resolveFolderPath(tree: DocumentTree | null, ids: number[]): FolderNode
  * the search text -- neither of which Ask/Summaries have any use for.
  *
  * `selection` (from the shared hook) is reused here to mean "the selected
- * file shown in the detail panel" -- this page never sets it to a folder
- * selection; opening a folder is expressed as navigation (folderPathIds)
- * instead, with the open folder's own info/summary shown inline via
- * DocumentFolderDetail's compact mode.
+ * file, currently open in preview" (Phase 7) -- this page never sets it to
+ * a folder selection; opening a folder is expressed as navigation
+ * (folderPathIds) instead, with the open folder's own info/summary shown
+ * inline via DocumentFolderDetail's compact mode.
+ *
+ * Selecting a document now swaps the entire main content area for
+ * `DocumentPreview` (PDF/DOCX/TXT content, full width -- a narrow side
+ * panel isn't wide enough to make a document actually readable) instead
+ * of the old side-panel `DocumentFileDetail`. `folderPathIds`/`search`
+ * are untouched by opening or closing a preview, so closing it returns
+ * the user to the exact same folder/search context they were browsing --
+ * never back to the Documents root or the Dashboard.
  */
 export default function DocumentExplorer() {
   const {
@@ -55,7 +64,6 @@ export default function DocumentExplorer() {
     loading,
     error,
     isEmpty,
-    selection,
     setSelection,
     selectedDocument,
     loadTree,
@@ -107,10 +115,27 @@ export default function DocumentExplorer() {
             <h1 className="text-2xl font-semibold text-slate-900">Documents</h1>
             <p className="mt-1 text-sm text-slate-500">Browse, manage and explore your documents</p>
           </div>
-          {tree && !isEmpty && <UploadControls variant="toolbar" onUploaded={loadTree} />}
+          {tree && !isEmpty && !selectedDocument && (
+            <UploadControls variant="toolbar" onUploaded={loadTree} />
+          )}
         </div>
 
-        {tree && !isEmpty && (
+        {tree && !isEmpty && selectedDocument && (
+          // Previewing a document: the normal breadcrumb/search row is
+          // replaced by a single, unambiguous way back. folderPathIds and
+          // search are untouched here, so closing the preview (below)
+          // returns to this exact same folder/search context.
+          <button
+            type="button"
+            onClick={() => setSelection(null)}
+            className="flex w-fit cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-sm font-medium text-slate-500 hover:text-slate-900"
+          >
+            <span aria-hidden>&larr;</span>
+            Back to Documents
+          </button>
+        )}
+
+        {tree && !isEmpty && !selectedDocument && (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="relative w-full max-w-sm">
               <span
@@ -164,74 +189,71 @@ export default function DocumentExplorer() {
           </div>
         )}
 
-        {!loading && !error && tree && !isEmpty && (
-          <div className="flex flex-col gap-6 lg:flex-row">
-            <div className="min-w-0 flex-1 space-y-6">
-              {currentFolder && (
-                <DocumentFolderDetail
-                  folder={currentFolder}
-                  onDelete={() => handleDeleteFolder(currentFolder)}
-                />
-              )}
+        {!loading && !error && tree && !isEmpty && selectedDocument && (
+          <DocumentPreview
+            key={selectedDocument.id}
+            document={selectedDocument}
+            onDelete={() => handleDeleteDocument(selectedDocument)}
+            onClose={() => setSelection(null)}
+          />
+        )}
 
-              {!levelHasContent && (
-                <p className="rounded-lg border border-dashed border-slate-200 bg-white px-6 py-10 text-center text-sm text-slate-500">
-                  This folder is empty.
-                </p>
-              )}
+        {!loading && !error && tree && !isEmpty && !selectedDocument && (
+          <div className="space-y-6">
+            {currentFolder && (
+              <DocumentFolderDetail
+                folder={currentFolder}
+                onDelete={() => handleDeleteFolder(currentFolder)}
+              />
+            )}
 
-              {levelHasContent && query && !hasSearchResults && (
-                <p className="rounded-lg border border-dashed border-slate-200 bg-white px-6 py-10 text-center text-sm text-slate-500">
-                  No folders or documents match &ldquo;{search.trim()}&rdquo;.
-                </p>
-              )}
+            {!levelHasContent && (
+              <p className="rounded-lg border border-dashed border-slate-200 bg-white px-6 py-10 text-center text-sm text-slate-500">
+                This folder is empty.
+              </p>
+            )}
 
-              {filteredSubfolders.length > 0 && (
-                <section>
-                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    {currentFolder ? "Subfolders" : "Top Level Folders"} ({filteredSubfolders.length})
-                  </h2>
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                    {filteredSubfolders.map((folder) => (
-                      <FolderCard
-                        key={folder.id}
-                        folder={folder}
-                        onOpen={() => openFolder(folder)}
-                        onDelete={() => handleDeleteFolder(folder)}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )}
+            {levelHasContent && query && !hasSearchResults && (
+              <p className="rounded-lg border border-dashed border-slate-200 bg-white px-6 py-10 text-center text-sm text-slate-500">
+                No folders or documents match &ldquo;{search.trim()}&rdquo;.
+              </p>
+            )}
 
-              {filteredFiles.length > 0 && (
-                <section>
-                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    {currentFolder ? "Files" : "Top Level Files"} ({filteredFiles.length})
-                  </h2>
-                  <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
-                    {filteredFiles.map((document) => (
-                      <FileRow
-                        key={document.id}
-                        document={document}
-                        selected={selection?.type === "document" && selection.id === document.id}
-                        onSelect={() => setSelection({ type: "document", id: document.id })}
-                        onDelete={() => handleDeleteDocument(document)}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )}
-            </div>
+            {filteredSubfolders.length > 0 && (
+              <section>
+                <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {currentFolder ? "Subfolders" : "Top Level Folders"} ({filteredSubfolders.length})
+                </h2>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {filteredSubfolders.map((folder) => (
+                    <FolderCard
+                      key={folder.id}
+                      folder={folder}
+                      onOpen={() => openFolder(folder)}
+                      onDelete={() => handleDeleteFolder(folder)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
 
-            {selectedDocument && (
-              <div className="w-full shrink-0 lg:w-80 xl:w-96">
-                <DocumentFileDetail
-                  document={selectedDocument}
-                  onDelete={() => handleDeleteDocument(selectedDocument)}
-                  onClose={() => setSelection(null)}
-                />
-              </div>
+            {filteredFiles.length > 0 && (
+              <section>
+                <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {currentFolder ? "Files" : "Top Level Files"} ({filteredFiles.length})
+                </h2>
+                <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+                  {filteredFiles.map((document) => (
+                    <FileRow
+                      key={document.id}
+                      document={document}
+                      selected={false}
+                      onSelect={() => setSelection({ type: "document", id: document.id })}
+                      onDelete={() => handleDeleteDocument(document)}
+                    />
+                  ))}
+                </div>
+              </section>
             )}
           </div>
         )}

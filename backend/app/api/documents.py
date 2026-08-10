@@ -1,18 +1,21 @@
 """
-Document endpoints: upload (single/multiple/folder), the full tree, and
-single-document deletion. Folder deletion lives in app/api/folders.py.
+Document endpoints: upload (single/multiple/folder), the full tree,
+single-document deletion, and preview content. Folder deletion lives in
+app/api/folders.py.
 """
 
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.document import Document
-from app.schemas import DocumentTreeResponse, UploadFileResult, UploadResponse
-from app.services import document_processing_service, document_service, storage_service
+from app.schemas import DocumentContentResponse, DocumentTreeResponse, UploadFileResult, UploadResponse
+from app.services import document_processing_service, document_service, extraction_service, storage_service
 from app.services.document_service import InvalidUploadPathError
+from app.services.extraction_service import ExtractionError
 from app.services.storage_service import UploadTooLargeError
 
 logger = logging.getLogger(__name__)
@@ -134,6 +137,62 @@ async def upload_documents(
 @router.get("/tree", response_model=DocumentTreeResponse)
 def get_document_tree(db: Session = Depends(get_db)) -> dict:
     return document_service.build_tree(db)
+
+
+@router.get("/{document_id}/content")
+def get_document_content(document_id: int, db: Session = Depends(get_db)):
+    """
+    Preview content for a single document (Phase 7).
+
+    PDFs: the raw stored file, streamed with `Content-Disposition: inline`
+    so the browser's own PDF viewer renders it (preferred over a custom
+    renderer — see docs/CLAUDE_CONTEXT.md). DOCX/TXT: extracted text via
+    the existing extraction_service (unchanged, same code path the Phase 3
+    indexing pipeline already uses) as `DocumentContentResponse` JSON.
+
+    Security: `document_id` is looked up in the database first — the
+    physical path served is always `Document.file_path` as stored by this
+    application (server-generated UUID filename), resolved through
+    storage_service.resolve_storage_path()'s existing containment check.
+    No filesystem path is ever accepted from the caller.
+    """
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        absolute_path = storage_service.resolve_storage_path(document.file_path)
+    except ValueError as exc:
+        logger.exception("Stored file_path failed containment check for document %s", document_id)
+        raise HTTPException(status_code=500, detail="This document's file could not be located") from exc
+
+    if not absolute_path.exists():
+        raise HTTPException(status_code=404, detail="This document's file is no longer available")
+
+    if document.file_type == "pdf":
+        return FileResponse(
+            absolute_path,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{document.original_filename}"'},
+        )
+
+    if document.file_type in ("docx", "txt"):
+        try:
+            pages = extraction_service.extract_document(absolute_path, document.file_type)
+        except ExtractionError as exc:
+            logger.exception("Preview extraction failed for document %s", document_id)
+            raise HTTPException(
+                status_code=422, detail="Could not read this document's content"
+            ) from exc
+        content = "\n\n".join(page.text for page in pages)
+        return DocumentContentResponse(file_type=document.file_type, content=content)
+
+    # Unreachable via the current upload path (parse_upload_path only
+    # allows .pdf/.docx/.txt), kept as a defensive, honest response rather
+    # than assuming it can never happen.
+    raise HTTPException(
+        status_code=415, detail=f"Preview isn't supported for file type '{document.file_type}'"
+    )
 
 
 @router.delete("/{document_id}", status_code=204)

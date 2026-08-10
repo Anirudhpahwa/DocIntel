@@ -70,6 +70,23 @@ class UploadResponse(BaseModel):
     failed: int
 
 
+# ---- Document preview (Phase 7) ----
+
+
+class DocumentContentResponse(BaseModel):
+    """
+    JSON shape returned by GET /api/documents/{id}/content for DOCX/TXT
+    (extracted text, reusing extraction_service unchanged -- no second
+    extraction implementation). PDFs go out a different path on the same
+    endpoint: the raw stored file, streamed directly with
+    `media_type="application/pdf"`, so the browser's own PDF viewer can
+    render it -- that response is never this Pydantic model.
+    """
+
+    file_type: str
+    content: str
+
+
 # ---- RAG query (Phase 4) ----
 
 

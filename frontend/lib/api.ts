@@ -137,6 +137,39 @@ export function deleteFolder(id: number): Promise<void> {
   return deleteRequest(`/api/folders/${id}`);
 }
 
+// ---- Document preview (Phase 7) ----
+
+/** GET /api/documents/{id}/content -- for PDFs the backend streams the raw
+ * file (`Content-Type: application/pdf`) so the browser's own PDF viewer
+ * can render it; for DOCX/TXT it returns extracted text as JSON. Both
+ * paths share this one URL/one endpoint. */
+export function documentContentUrl(documentId: number): string {
+  return `${API_BASE_URL}/api/documents/${documentId}/content`;
+}
+
+export interface DocumentContentResponse {
+  file_type: string;
+  content: string;
+}
+
+/** Fetches a document's raw preview response. Callers branch on the
+ * caller-known `file_type` (already available from the tree) to decide
+ * whether to read the body as a Blob (PDF, fed to an <iframe> via
+ * `URL.createObjectURL`) or as `DocumentContentResponse` JSON (DOCX/TXT). */
+export async function fetchDocumentContentRaw(documentId: number): Promise<Response> {
+  // no-store, same as fetchDocumentTree() above: a re-uploaded/replaced
+  // document keeps the same id and URL but different bytes, so a cached
+  // response here could silently show stale content.
+  const response = await fetch(documentContentUrl(documentId), { cache: "no-store" });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null);
+    const message =
+      typeof detail?.detail === "string" ? detail.detail : `Failed to load document (status ${response.status})`;
+    throw new ApiError(message, response.status);
+  }
+  return response;
+}
+
 // ---- RAG query (Phase 4) ----
 
 export type QueryScope = { type: "all" } | { type: "folder"; id: number } | { type: "document"; id: number };
