@@ -1,57 +1,49 @@
 "use client";
 
 import { useDocumentTree } from "@/lib/useDocumentTree";
-import DocumentSidebar from "@/components/document/DocumentSidebar";
-import SummaryPanel from "@/components/document/SummaryPanel";
-import type { SummaryScope } from "@/lib/api";
+import SummariesSidebar from "@/components/document/SummariesSidebar";
+import SummaryPanel, { type SummaryTarget } from "@/components/document/SummaryPanel";
 
-const FILE_ICON = "\u{1F4C4}"; // 📄
-const FOLDER_ICON = "\u{1F4C1}"; // 📁
-
-/** Shown until a document or folder is selected — summarization has no "all documents" scope (§16). */
+/** Shown until a document or folder is selected -- summarization has no
+ * "all documents" scope (Phase 5, §16): the backend rejects `scope.type:
+ * "all"` with a 422, so this page never offers or implies that option. */
 function NothingSelected() {
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-8">
-      <h2 className="text-lg font-semibold text-slate-900">Select a document or folder</h2>
-      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500">
-        Choose a file or folder from the tree on the left, then generate a
-        summary of its contents.
+    <section className="rounded-lg border border-dashed border-slate-200 bg-white p-10 text-center">
+      <h2 className="text-base font-medium text-slate-700">Generate document summaries</h2>
+      <p className="mx-auto mt-1 max-w-md text-sm text-slate-500">
+        Select a document or folder from the left to generate an AI-powered summary.
       </p>
     </section>
   );
 }
 
 /**
- * Summaries workspace (`/summaries`, Phase 6): dedicated summarization
- * page. Reuses the same tree/selection state as Documents/Ask
- * (useDocumentTree) for scope selection only — no upload/delete here.
- * Reuses SummaryPanel and the existing /api/summarize flow unchanged.
- * Unlike Ask, summarization has no "all documents" scope (the backend
- * rejects it with 422 — see docs/CLAUDE_CONTEXT.md §16), so nothing is
- * rendered here until a specific document or folder is selected.
+ * Summaries workspace (`/summaries`, Phase 6C): select a document or
+ * folder on the left, generate its summary on the right. Reuses
+ * `useDocumentTree()` unchanged for tree fetch/selection state (same hook
+ * Documents/Ask use) and `generateSummary`/`POST /api/summarize`
+ * unchanged for the actual call -- no backend file touched.
+ *
+ * `SummaryTarget` carries the real `DocumentItem`/`FolderNode` (not just
+ * an id) so `SummaryPanel` can render actual metadata (file type,
+ * processing status, recursive document count) without a second fetch --
+ * `selectedFolder`/`selectedDocument` already come fully populated from
+ * the shared tree.
  */
 export default function SummariesPage() {
-  const {
-    tree,
-    loading,
-    error,
-    isEmpty,
-    selection,
-    setSelection,
-    selectedFolder,
-    selectedDocument,
-    scopeLabel,
-  } = useDocumentTree();
+  const { tree, loading, error, isEmpty, selection, setSelection, selectedFolder, selectedDocument } =
+    useDocumentTree();
 
-  const summaryScope: SummaryScope | null = selectedDocument
-    ? { type: "document", id: selectedDocument.id }
+  const target: SummaryTarget | null = selectedDocument
+    ? { kind: "document", document: selectedDocument }
     : selectedFolder
-      ? { type: "folder", id: selectedFolder.id }
+      ? { kind: "folder", folder: selectedFolder }
       : null;
 
   return (
     <div className="flex flex-1">
-      <DocumentSidebar
+      <SummariesSidebar
         tree={tree}
         loading={loading}
         error={error}
@@ -61,16 +53,10 @@ export default function SummariesPage() {
         onSelectDocument={(id) => setSelection({ type: "document", id })}
       />
 
-      <main className="flex-1 p-6">
-        <div className="mx-auto max-w-3xl">
-          {summaryScope ? (
-            <div className="rounded-lg border border-slate-200 bg-white p-8">
-              <p className="flex items-center gap-2 text-lg font-semibold text-slate-900">
-                <span aria-hidden>{selectedDocument ? FILE_ICON : FOLDER_ICON}</span>
-                {scopeLabel}
-              </p>
-              <SummaryPanel key={`${summaryScope.type}-${summaryScope.id}`} scope={summaryScope} />
-            </div>
+      <main className="flex-1 overflow-y-auto p-6">
+        <div className="mx-auto max-w-4xl">
+          {target ? (
+            <SummaryPanel key={`${target.kind}-${target.kind === "document" ? target.document.id : target.folder.id}`} target={target} />
           ) : (
             <NothingSelected />
           )}

@@ -217,7 +217,10 @@ export async function generateSummary(scope: SummaryScope): Promise<SummarizeRes
         : Array.isArray(detail?.detail) && detail.detail[0]?.msg
           ? detail.detail[0].msg
           : `Summary generation failed (status ${response.status})`;
-    throw new Error(message);
+    // ApiError (Phase 6B), not a plain Error -- lets the Summaries page
+    // (Phase 6C) map 404/422/503/other to its own fixed copy the same way
+    // the Ask page already does for /api/query.
+    throw new ApiError(message, response.status);
   }
 
   return response.json();
