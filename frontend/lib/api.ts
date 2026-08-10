@@ -150,6 +150,26 @@ export interface QueryResponse {
   chunks_retrieved: number;
 }
 
+/**
+ * A failed API call, carrying the HTTP status code alongside the message
+ * (Phase 6B) -- lets a caller map a specific status (503 Ollama down, 404
+ * unknown scope, 422 bad input) to its own friendly copy instead of only
+ * having the backend's raw `detail` string. Doesn't change what the
+ * backend sends or how; this only captures a field the Response object
+ * already had. `instanceof Error`, so existing callers that just read
+ * `.message` (uploadDocuments/deleteDocument/generateSummary's callers)
+ * are unaffected.
+ */
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function askQuestion(question: string, scope: QueryScope): Promise<QueryResponse> {
   const response = await fetch(`${API_BASE_URL}/api/query`, {
     method: "POST",
@@ -165,7 +185,7 @@ export async function askQuestion(question: string, scope: QueryScope): Promise<
         : Array.isArray(detail?.detail) && detail.detail[0]?.msg
           ? detail.detail[0].msg
           : `Query failed (status ${response.status})`;
-    throw new Error(message);
+    throw new ApiError(message, response.status);
   }
 
   return response.json();

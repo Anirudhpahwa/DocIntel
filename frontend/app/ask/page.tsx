@@ -1,16 +1,21 @@
 "use client";
 
 import { useDocumentTree } from "@/lib/useDocumentTree";
-import DocumentSidebar from "@/components/document/DocumentSidebar";
+import AskSidebar from "@/components/document/AskSidebar";
 import AskPanel from "@/components/document/AskPanel";
 
 /**
- * Ask workspace (`/ask`, Phase 6): dedicated Q&A page. Reuses the same
- * tree/selection state as Documents/Summaries (useDocumentTree) purely for
- * scope selection — no upload or delete actions here, this page is about
- * asking questions, not managing documents. Reuses AskPanel and the
- * existing /api/query flow completely unchanged; scope defaults to "all
- * documents" when nothing is selected, exactly like before Phase 6.
+ * Ask workspace (`/ask`, Phase 6B): a dedicated question-answering
+ * workspace -- select a scope on the left, ask a plain-English question
+ * on the right, see a grounded answer and its backend-selected sources.
+ *
+ * Reuses `useDocumentTree()` unchanged for tree fetch/selection state
+ * (same hook Documents/Summaries use -- no duplicated fetch logic) and
+ * `askQuestion`/`POST /api/query` unchanged for the actual RAG call. Only
+ * new pieces are presentational: `AskSidebar` (adds the "All Documents"
+ * option atop the existing `FolderTree`) and a rewritten `AskPanel`
+ * (empty state, example questions, mapped error copy, formatted
+ * answer/sources). No backend file, database, or API contract changed.
  */
 export default function AskPage() {
   const { tree, loading, error, isEmpty, selection, setSelection, queryScope, scopeLabel } =
@@ -18,7 +23,7 @@ export default function AskPage() {
 
   return (
     <div className="flex flex-1">
-      <DocumentSidebar
+      <AskSidebar
         tree={tree}
         loading={loading}
         error={error}
@@ -26,10 +31,11 @@ export default function AskPage() {
         selection={selection}
         onSelectFolder={(id) => setSelection({ type: "folder", id })}
         onSelectDocument={(id) => setSelection({ type: "document", id })}
+        onSelectAll={() => setSelection(null)}
       />
 
-      <main className="flex-1 p-6">
-        <div className="mx-auto max-w-3xl">
+      <main className="flex-1 overflow-y-auto p-6">
+        <div className="mx-auto max-w-4xl">
           <AskPanel
             key={`${queryScope.type}-${"id" in queryScope ? queryScope.id : "all"}`}
             scope={queryScope}
