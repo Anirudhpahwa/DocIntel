@@ -1,11 +1,11 @@
-import WelcomePanel from "@/components/WelcomePanel";
+import DashboardOverview from "@/components/dashboard/DashboardOverview";
 
-/** Dashboard (`/`) — overview/welcome + system status. No document sidebar here (Phase 6). */
+/** Dashboard (`/`) — workspace overview: real counts, system status, quick actions, recent documents, folder overview (Phase 6D). No document sidebar here. */
 export default function DashboardPage() {
   return (
     <main className="flex-1 p-6">
-      <div className="mx-auto flex max-w-3xl flex-col gap-6">
-        <WelcomePanel />
+      <div className="mx-auto max-w-6xl">
+        <DashboardOverview />
       </div>
     </main>
   );

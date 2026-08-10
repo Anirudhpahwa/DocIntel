@@ -9,9 +9,12 @@ interface UploadControlsProps {
   // DocumentSidebar (also reused read-only-free by Ask/Summaries, though
   // they never pass onUploaded so this component doesn't render there).
   // "toolbar": prominent side-by-side buttons for the Documents page header
-  // (Phase 6A) — same upload logic/inputs, just a different button layout,
-  // so there is still exactly one upload implementation.
-  variant?: "sidebar" | "toolbar";
+  // (Phase 6A). "cards": two full quick-action-card buttons for the
+  // Dashboard's Quick Actions grid (Phase 6D), visually matching its
+  // Link-based "Ask a Question"/"Browse Documents" cards. All three variants
+  // share the same upload logic/inputs below — just different button
+  // layouts, so there is still exactly one upload implementation.
+  variant?: "sidebar" | "toolbar" | "cards";
 }
 
 function relativePathOf(file: File): string {
@@ -82,6 +85,53 @@ export default function UploadControls({ onUploaded, variant = "sidebar" }: Uplo
       />
     </>
   );
+
+  if (variant === "cards") {
+    return (
+      <>
+        {inputs}
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => filesInputRef.current?.click()}
+          className="group flex flex-col items-start gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span aria-hidden className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-base text-slate-600">
+            {"\u{2B06}"}
+          </span>
+          <span>
+            <span className="block text-sm font-medium text-slate-900">Upload Files</span>
+            <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+              Upload documents from your device
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => folderInputRef.current?.click()}
+          className="group flex flex-col items-start gap-3 rounded-lg border border-slate-200 bg-white p-4 text-left transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span aria-hidden className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-base text-slate-600">
+            {"\u{1F4C1}"}
+          </span>
+          <span>
+            <span className="block text-sm font-medium text-slate-900">Upload Folder</span>
+            <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+              Upload a folder with documents
+            </span>
+          </span>
+        </button>
+        {(uploading || error || result) && (
+          <div className="col-span-2 -mt-2">
+            {uploading && <p className="text-xs text-slate-400">Uploading…</p>}
+            {error && <p className="text-xs text-red-600">{error}</p>}
+            {result && <UploadResultSummary result={result} onDismiss={() => setResult(null)} />}
+          </div>
+        )}
+      </>
+    );
+  }
 
   if (variant === "toolbar") {
     return (

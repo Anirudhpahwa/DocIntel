@@ -1,27 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchHealth, type HealthResponse } from "@/lib/api";
+import { API_BASE_URL, fetchHealth, type HealthResponse } from "@/lib/api";
 
 type LoadState = "loading" | "loaded" | "error";
 
-const LABELS: Record<keyof HealthResponse, string> = {
-  api: "API Connected",
-  database: "Database Connected",
-  pgvector: "Vector Search Ready",
-  ollama: "AI Runtime Available",
-};
+const SERVICES: { key: keyof HealthResponse; label: string; description: string; icon: string }[] = [
+  { key: "api", label: "API", description: "FastAPI application server", icon: "⚙️" },
+  { key: "database", label: "Database", description: "PostgreSQL", icon: "\u{1F5C4}️" },
+  { key: "pgvector", label: "pgvector", description: "Vector extension", icon: "\u{1F9E9}" },
+  { key: "ollama", label: "Ollama", description: "AI model service", icon: "\u{1F9E0}" },
+];
 
-function StatusDot({ ok }: { ok: boolean }) {
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full ${
-        ok ? "bg-emerald-500" : "bg-red-500"
-      }`}
-    />
-  );
-}
-
+/**
+ * The Dashboard's "System Status" card (Phase 6D restyle). Reuses the
+ * exact same `fetchHealth()` call and 15s poll this component already
+ * had -- no second health-check implementation, no new endpoint. Only
+ * the rendering changed: a compact per-service row (icon, label,
+ * description, "Operational"/"Unavailable") instead of the old flat
+ * list, plus a link straight to the real `/api/health` JSON so "view
+ * system health" is an actual working link, not a placeholder.
+ */
 export default function HealthStatus() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [state, setState] = useState<LoadState>("loading");
@@ -61,24 +60,46 @@ export default function HealthStatus() {
 
       {state === "error" && (
         <div className="mt-3 flex items-center gap-2 text-sm text-red-600">
-          <StatusDot ok={false} />
+          <span aria-hidden>&#9888;</span>
           Cannot reach the backend API
         </div>
       )}
 
       {state === "loaded" && health && (
-        <ul className="mt-3 space-y-2">
-          {(Object.keys(LABELS) as Array<keyof HealthResponse>).map((key) => (
-            <li key={key} className="flex items-center gap-2 text-sm text-slate-700">
-              <StatusDot ok={health[key] === "ok"} />
-              {LABELS[key]}
-              {health[key] !== "ok" && (
-                <span className="text-xs text-slate-400">(unavailable)</span>
-              )}
-            </li>
-          ))}
+        <ul className="mt-3 divide-y divide-slate-100">
+          {SERVICES.map(({ key, label, description, icon }) => {
+            const ok = health[key] === "ok";
+            return (
+              <li key={key} className="flex items-center gap-3 py-2.5">
+                <span
+                  aria-hidden
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-sm"
+                >
+                  {icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-slate-900">{label}</span>
+                  <span className="block text-xs text-slate-400">{description}</span>
+                </span>
+                <span
+                  className={`shrink-0 text-xs font-medium ${ok ? "text-emerald-600" : "text-red-600"}`}
+                >
+                  {ok ? "● Operational" : "⚠ Unavailable"}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
+
+      <a
+        href={`${API_BASE_URL}/api/health`}
+        target="_blank"
+        rel="noreferrer"
+        className="mt-4 inline-block text-xs font-medium text-blue-600 hover:text-blue-700"
+      >
+        View system health &#8599;
+      </a>
     </div>
   );
 }

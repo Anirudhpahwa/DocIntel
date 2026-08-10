@@ -6,7 +6,10 @@
  * calls across components.
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010";
+// Exported (Phase 6D) so the Dashboard's "View system health" link can
+// point at the real /api/health endpoint directly, without a second
+// hardcoded copy of this fallback logic.
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010";
 
 export type ServiceStatus = "ok" | "unavailable";
 

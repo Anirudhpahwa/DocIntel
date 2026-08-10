@@ -42,3 +42,32 @@ export function findDocumentById(tree: DocumentTree, id: number): DocumentItem |
   }
   return search(tree.folders, tree.documents);
 }
+
+export interface FlatDocument {
+  document: DocumentItem;
+  /** Immediate containing folder's name, or null for a top-level orphan document. */
+  folderName: string | null;
+}
+
+/**
+ * Every document in the tree, at any depth, alongside its immediate
+ * parent folder's name (Phase 6D) -- used by the Dashboard to compute
+ * real status counts and a "recent documents" list without a second
+ * fetch or a duplicate tree-walking implementation. Every field here
+ * comes straight from the existing `/api/documents/tree` response.
+ */
+export function flattenDocuments(tree: DocumentTree): FlatDocument[] {
+  const result: FlatDocument[] = [];
+
+  function walk(folders: FolderNode[], documents: DocumentItem[], folderName: string | null) {
+    for (const document of documents) {
+      result.push({ document, folderName });
+    }
+    for (const folder of folders) {
+      walk(folder.folders, folder.documents, folder.name);
+    }
+  }
+
+  walk(tree.folders, tree.documents, null);
+  return result;
+}
